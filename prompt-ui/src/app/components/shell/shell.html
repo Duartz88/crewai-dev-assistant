@@ -1,0 +1,70 @@
+<app-setup-modal
+  *ngIf="showSetup()"
+  [initialPath]="session().project_path"
+  [cancelable]="!!session().project_path"
+  (start)="onStartSession($event)"
+  (cancel)="showSetup.set(false)" />
+
+<app-prompt-modal
+  *ngIf="showPrompt()"
+  [data]="promptData()"
+  (respond)="onRespondInput($event)" />
+
+<app-commit-modal
+  *ngIf="showCommit()"
+  (commit)="onCommit($event)"
+  (cancel)="showCommit.set(false)" />
+
+<app-branch-modal
+  *ngIf="showBranch()"
+  [session]="session()"
+  (close)="showBranch.set(false)"
+  (branchDeleted)="session.update(s => ({...s, branch: $event ? null : s.branch})); lines.update(ls => [...ls, {text: 'Branch apagada', cls: 'warn'}])" />
+
+<header>
+  <span class="icon lg" style="color:var(--accent)">terminal</span>
+  <h1>Dev Studio</h1>
+  <span class="badge project-badge" (click)="showSetup.set(true)" title="Mudar projeto">
+    <span class="icon sm">folder_open</span> {{ projectName() }}
+  </span>
+  <span class="badge" [class.active]="session().branch">{{ session().branch || '—' }}</span>
+  <span class="badge" [class.running]="running()">{{ running() ? 'A correr...' : 'Idle' }}</span>
+  @if (running()) {
+    <button class="btn btn-stop" (click)="stopRequest()" title="Parar execução">
+      <span class="icon sm">stop_circle</span>
+    </button>
+  }
+  <span class="badge lm-badge"
+        [class.lm-ok]="lmOk() === true"
+        [class.lm-err]="lmOk() === false"
+        [title]="lmOk() === false ? 'LM Studio: sem modelo carregado' : (lmModel() ?? 'LM Studio OK')">
+    <span class="icon sm">{{ lmOk() === false ? 'memory_off' : 'memory' }}</span>
+    {{ lmOk() === null ? '...' : lmOk() ? (lmModel() ?? 'LM OK') : 'Sem modelo' }}
+  </span>
+  <div class="spacer"></div>
+  <button class="btn" (click)="clearOutput()" title="Limpar output">
+    <span class="icon sm">delete_sweep</span> Limpar
+  </button>
+  <button class="btn" (click)="showBranch.set(true)" title="Gerir branches">
+    <span class="icon sm">account_tree</span> Branches
+  </button>
+  <button class="btn" (click)="onNewSession()" title="Nova sessão">
+    <span class="icon sm">add</span> Sessão
+  </button>
+  <button class="btn primary" (click)="showCommit.set(true)" title="Commit da sessão">
+    <span class="icon sm">save</span> Commit
+  </button>
+</header>
+
+<div class="layout">
+  <app-sidebar [session]="session()" [style.width.px]="sidebarWidth()" />
+  <div class="resize-handle" (mousedown)="onResizeStart($event)"></div>
+  <app-output-pane
+    [lines]="lines()"
+    [running]="running()"
+    [selectedAgent]="selectedAgent()"
+    [contextFrom]="contextFrom()"
+    (submit)="onSubmitRequest($event)"
+    (agentChange)="onAgentSelected($event)"
+    (clearCtx)="clearContext()" />
+</div>

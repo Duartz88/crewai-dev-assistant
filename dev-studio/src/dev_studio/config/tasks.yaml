@@ -1,0 +1,248 @@
+design_task:
+  description: >
+    <pedido>
+    {request}
+    </pedido>
+
+    <contexto_adicional>
+    {context}
+    </contexto_adicional>
+
+    <projeto>{project_path}</projeto>
+
+    Executa os seguintes passos em ordem. Não saltes nenhum:
+
+    PASSO 0 — Projectos externos mencionados no pedido
+    Lê o pedido com atenção. Se mencionar caminhos de outros projectos ou ficheiros externos
+    (ex: "compara com C:\...", "usa como referência C:\...", "baseado em C:\..."):
+    a) Usa list_project_structure nesses caminhos para mapear a sua estrutura
+    b) Usa read_file para ler CADA ficheiro externo mencionado explicitamente
+    c) Regista o conteúdo desses ficheiros — vais precisar para a comparação
+    Se o pedido NÃO mencionar projectos externos, avança para o PASSO 1.
+
+    PASSO 1 — Memória do projeto
+    Usa a ferramenta read_project_memory com o caminho {project_path}.
+    Lê e anota o que foi aprendido em execuções anteriores.
+
+    PASSO 2 — Histórico git
+    Usa a ferramenta git_log com o caminho {project_path}.
+    Identifica o que mudou recentemente e quem tocou em quê.
+
+    PASSO 3 — Estrutura do projeto actual
+    Usa a ferramenta list_project_structure com o caminho {project_path}.
+    Mapeia os diretórios e ficheiros existentes.
+
+    PASSO 4 — Leitura de ficheiros relevantes do projeto actual
+    Usa a ferramenta read_file para ler os ficheiros que o pedido vai tocar.
+    Regista todos os endpoints, funções e classes existentes nesses ficheiros.
+
+    PASSO 5 — Produz o plano
+    Com base em TUDO o que leste (projectos externos + projecto actual), produz o plano.
+    Para tarefas de comparação: documenta diferenças concretas com trechos de código de ambos os lados.
+
+    RESTRIÇÕES:
+    - Não propões criar diretórios de topo a não ser que o pedido o exija explicitamente
+    - Listas TODOS os endpoints/funções/classes existentes nos ficheiros a modificar
+    - O plano cobre APENAS o que é pedido — sem melhorias não solicitadas
+    - Se o pedido for ambíguo, incluis uma secção "Perguntas" com as dúvidas
+
+    Responde em português.
+  expected_output: >
+    ## Contexto do projeto
+    [O que aprendeste da memória + git log: decisões anteriores, padrões, mudanças recentes]
+
+    ## Pedido
+    [Resumo claro do que foi pedido]
+
+    ## Análise dos ficheiros existentes
+    [Para cada ficheiro relevante: lista de endpoints/funções/classes que já existem e DEVEM ser preservados]
+
+    ## Plano de implementação
+
+    ### Ficheiros a CRIAR
+    - `caminho/ficheiro.ext` — propósito claro
+
+    ### Ficheiros a MODIFICAR
+    - `caminho/ficheiro.ext`
+      - Preservar: [lista de o que não deve ser tocado]
+      - Adicionar/Alterar: [descrição precisa das mudanças]
+
+    ### Ficheiros a NÃO TOCAR
+    - [razão pela qual não devem ser modificados]
+
+    ## Perguntas ao utilizador (se aplicável)
+    [Dúvidas que precisam de resposta antes de implementar — omite esta secção se não existirem]
+  agent: architect
+
+implement_task:
+  description: >
+    <plano_aprovado>
+    {context}
+    </plano_aprovado>
+
+    <pedido>
+    {request}
+    </pedido>
+
+    <projeto>{project_path}</projeto>
+
+    Implementa o pedido seguindo o plano/contexto acima. Para cada ficheiro, segue estes passos:
+
+    PARA CADA FICHEIRO A CRIAR:
+    1. Valida a sintaxe se for .py (usa validate_python_syntax)
+    2. Usa write_file para criar o ficheiro (apresenta conteúdo e pede aprovação)
+
+    PARA CADA FICHEIRO A MODIFICAR:
+    1. Lê o conteúdo COMPLETO com read_file — NUNCA escreves sem ler primeiro
+    2. Valida a sintaxe se for .py (usa validate_python_syntax com o conteúdo novo)
+    3. Valida se for .ts ou .tsx (usa validate_typescript)
+    4. Usa write_file para escrever (apresenta diff e pede aprovação)
+
+    REGRAS ABSOLUTAS:
+    - Nunca crias ficheiros que não estejam no plano
+    - Nunca removes funções/endpoints que devem ser preservados
+    - Se a validação falhar, corriges o erro antes de escrever
+    - Se o utilizador recusar um diff, perguntas o que deve mudar
+
+    NO FINAL:
+    Usa write_project_memory para registar as decisões de implementação mais importantes.
+
+    Responde em português.
+  expected_output: >
+    ## Ficheiros processados
+
+    Para cada ficheiro modificado usa EXACTAMENTE este formato:
+
+    ### `caminho/ficheiro.ext` — MODIFICADO
+
+    **ANTES:**
+    ```lang
+    [bloco de código original que foi alterado]
+    ```
+    **DEPOIS:**
+    ```lang
+    [bloco de código novo que substituiu o original]
+    ```
+
+    Para ficheiros criados:
+
+    ### `caminho/ficheiro.ext` — CRIADO
+    ```lang
+    [conteúdo completo do ficheiro]
+    ```
+
+    ## Confirmações
+    - Nenhuma funcionalidade existente foi removida: Sim/Não
+    - Todos os ficheiros do plano foram processados: Sim/Não
+    - Memória do projeto actualizada: Sim/Não
+
+    ## Notas de implementação
+    [Decisões técnicas relevantes e problemas encontrados]
+  agent: developer
+
+fix_task:
+  description: >
+    <problemas_a_corrigir>
+    {context}
+    </problemas_a_corrigir>
+
+    <pedido>
+    {request}
+    </pedido>
+
+    <projeto>{project_path}</projeto>
+
+    O Reviewer identificou os problemas no contexto acima. Corrige APENAS esses problemas.
+
+    Para cada problema listado:
+    1. Lê o ficheiro actual com read_file
+    2. Identifica exactamente o que precisa de mudar
+    3. Se for .py: usa validate_python_syntax antes de escrever
+    4. Se for .ts/.tsx: usa validate_typescript antes de escrever
+    5. Usa write_file para aplicar a correcção
+
+    RESTRIÇÕES:
+    - Corrige APENAS os problemas listados — nada mais
+    - Não refactoras código que não esteja nos problemas identificados
+    - Não adicionas funcionalidades não pedidas
+
+    Responde em português.
+  expected_output: >
+    ## Correcções aplicadas
+
+    Para cada problema usa EXACTAMENTE este formato:
+
+    ### Problema [N]: [descrição]
+    **Ficheiro:** `caminho/ficheiro.ext`
+
+    **ANTES:**
+    ```lang
+    [código com o problema]
+    ```
+    **DEPOIS:**
+    ```lang
+    [código corrigido]
+    ```
+    **Estado:** Resolvido / Parcialmente resolvido (explica porquê)
+
+    ## Confirmação
+    Todos os problemas identificados foram endereçados: Sim/Não
+  agent: developer
+
+review_task:
+  description: >
+    <implementacao_a_rever>
+    {context}
+    </implementacao_a_rever>
+
+    <pedido_original>
+    {request}
+    </pedido_original>
+
+    <projeto>{project_path}</projeto>
+
+    Revê a implementação executando estes passos em ordem:
+
+    PASSO 1 — Testes automáticos
+    Usa run_tests com o caminho {project_path}.
+    Regista o resultado exacto (passou/falhou/sem testes).
+
+    PASSO 2 — Leitura dos ficheiros modificados
+    Usa read_file para cada ficheiro que foi alterado (menciona o contexto acima).
+    Se o pedido original referenciar ficheiros de outro projecto, usa read_file
+    nesses ficheiros externos para comparação directa.
+
+    PASSO 3 — Verificação do checklist
+    Para cada ponto abaixo, responde Sim ou Não com justificação:
+
+    1. Todos os endpoints/funções que existiam antes ainda existem?
+    2. Os imports Python usam pontos (ex: from app.models import X)?
+    3. Foram criados ficheiros fora do plano aprovado?
+    4. Os testes automáticos passam (ou não existiam antes)?
+    5. O código segue os padrões existentes no projeto?
+    6. Existem paths hardcoded, credenciais ou console.log esquecidos?
+
+    PASSO 4 — Memória
+    Usa write_project_memory para registar padrões úteis ou problemas recorrentes.
+
+    Responde em português.
+  expected_output: >
+    ## Resultado dos testes
+    [Output exacto do run_tests ou "Sem suite de testes detectada"]
+
+    ## Checklist de revisão
+    1. Endpoints/funções preservados: Sim/Não — [detalhe]
+    2. Imports Python correctos: Sim/Não — [detalhe]
+    3. Scope respeitado (sem ficheiros extra): Sim/Não — [detalhe]
+    4. Testes passam: Sim/Não — [detalhe]
+    5. Padrões do projeto seguidos: Sim/Não — [detalhe]
+    6. Sem problemas de qualidade (paths, credenciais, logs): Sim/Não — [detalhe]
+
+    ## Veredicto
+    Aprovado
+    ou
+    Requer correções
+
+    ## Problemas a corrigir (se aplicável)
+    [Lista numerada e precisa — omite se aprovado]
+  agent: reviewer

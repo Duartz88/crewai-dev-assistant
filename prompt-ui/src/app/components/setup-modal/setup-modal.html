@@ -1,0 +1,18 @@
+<div class="modal-backdrop">
+  <div class="modal-box" style="width:480px">
+    <h2><span class="icon" style="color:var(--accent);margin-right:8px">terminal</span>Dev Studio</h2>
+    <label>Caminho do projeto</label>
+    <input type="text" [(ngModel)]="path" placeholder="C:\_PROJECTS\MyApp"
+           (keydown.enter)="submit()" autofocus />
+    <div class="modal-actions">
+      @if (cancelable()) {
+        <button class="btn" (click)="cancel.emit()">
+          <span class="icon sm">close</span> Cancelar
+        </button>
+      }
+      <button class="btn primary" (click)="submit()">
+        <span class="icon sm">play_arrow</span> {{ cancelable() ? 'Mudar projeto' : 'Iniciar sessão' }}
+      </button>
+    </div>
+  </div>
+</div>

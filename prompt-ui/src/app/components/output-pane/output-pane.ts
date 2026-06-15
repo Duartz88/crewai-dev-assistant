@@ -1,0 +1,84 @@
+import { Component, input, output, signal, ElementRef, ViewChild, AfterViewChecked } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { OutputLine } from '../shell/shell';
+
+type AgentId = 'architect' | 'developer' | 'reviewer' | 'dev+review';
+
+const AGENTS: { id: AgentId; label: string; icon: string }[] = [
+  { id: 'architect',  label: 'Arquitecto', icon: 'architecture' },
+  { id: 'developer',  label: 'Developer',  icon: 'code'         },
+  { id: 'reviewer',   label: 'Reviewer',   icon: 'fact_check'   },
+  { id: 'dev+review', label: 'Dev+Review', icon: 'merge'        },
+];
+
+const AGENT_LABELS: Record<string, string> = {
+  architect: 'Arquitecto', developer: 'Developer',
+  reviewer: 'Reviewer', 'dev+review': 'Dev+Review',
+};
+
+@Component({
+  selector: 'app-output-pane',
+  imports: [CommonModule, FormsModule],
+  templateUrl: './output-pane.html',
+  styleUrl: './output-pane.scss',
+})
+export class OutputPane implements AfterViewChecked {
+  lines         = input<OutputLine[]>([]);
+  running       = input(false);
+  selectedAgent = input<string>('architect');
+  contextFrom   = input<string | null>(null);
+
+  submit      = output<string>();
+  agentChange = output<string>();
+  clearCtx    = output<void>();
+
+  readonly agents = AGENTS;
+
+  request = signal('');
+  private autoScroll = true;
+
+  @ViewChild('out') outEl!: ElementRef<HTMLDivElement>;
+
+  ngAfterViewChecked() {
+    if (this.autoScroll) {
+      const el = this.outEl?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }
+
+  onScroll(el: HTMLDivElement) {
+    this.autoScroll = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  }
+
+  onEnter(e: Event) {
+    if ((e as KeyboardEvent).shiftKey) return;
+    e.preventDefault();
+    this.send();
+  }
+
+  send() {
+    const req = this.request().trim();
+    if (!req || this.running()) return;
+    this.submit.emit(req);
+    this.request.set('');
+  }
+
+  contextLabel(): string {
+    const a = this.contextFrom();
+    return a ? `Contexto: ${AGENT_LABELS[a] ?? a}` : '';
+  }
+
+  copyAll() {
+    const text = this.lines()
+      .map(l => l.text || '')
+      .filter(t => t.trim())
+      .join('\n');
+    navigator.clipboard.writeText(text).catch(console.error);
+  }
+
+  copySelected() {
+    const sel = window.getSelection()?.toString() || '';
+    if (sel) navigator.clipboard.writeText(sel).catch(console.error);
+  }
+}

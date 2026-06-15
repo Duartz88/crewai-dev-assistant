@@ -1,0 +1,50 @@
+<div class="out" #out (scroll)="onScroll(out)">
+  @if (lines().length === 0) {
+    <span class="empty">Aguardando primeiro pedido...</span>
+  }
+  @for (line of lines(); track $index) {
+    @if (line.html) {
+      <div class="line" [class]="line.cls" [innerHTML]="line.html"></div>
+    } @else {
+      <span class="line" [class]="line.cls">{{ line.text }}</span>
+    }
+  }
+</div>
+<div class="copy-bar">
+  <button class="btn-copy" (click)="copyAll()" title="Copiar todo o output">
+    <span class="icon sm">content_copy</span> Copiar tudo
+  </button>
+  <button class="btn-copy" (click)="copySelected()" title="Copiar texto selecionado">
+    <span class="icon sm">text_select_start</span> Copiar seleção
+  </button>
+</div>
+<div class="agent-bar">
+  @for (a of agents; track a.id) {
+    <button class="agent-chip"
+            [class.active]="selectedAgent() === a.id"
+            [disabled]="running()"
+            (click)="agentChange.emit(a.id)">
+      <span class="icon sm">{{ a.icon }}</span>
+      {{ a.label }}
+    </button>
+  }
+  @if (contextFrom()) {
+    <span class="ctx-badge">
+      <span class="icon sm">link</span> {{ contextLabel() }}
+    </span>
+    <button class="btn-copy ctx-clear" (click)="clearCtx.emit()" title="Limpar contexto">
+      <span class="icon sm">close</span>
+    </button>
+  }
+</div>
+<div class="input-bar">
+  <span class="prompt-prefix">&gt;_</span>
+  <textarea [(ngModel)]="request"
+            placeholder="Prompt"
+            [disabled]="running()"
+            (keydown.enter)="onEnter($event)"
+            rows="3"></textarea>
+  <button [disabled]="running()" (click)="send()">
+    <span class="icon sm">send</span>
+  </button>
+</div>

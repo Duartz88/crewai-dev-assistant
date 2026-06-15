@@ -1,0 +1,31 @@
+<div class="modal-backdrop" style="z-index:200">
+  <div class="box">
+    <h3><span class="icon sm" style="margin-right:6px">account_tree</span>Gerir branches</h3>
+    <div class="list">
+      @if (loading()) {
+        <div class="empty">A carregar...</div>
+      } @else if (branches().length === 0) {
+        <div class="empty">Nenhuma branch encontrada.</div>
+      } @else {
+        @for (b of branches(); track b.name) {
+          <div class="row" [class.current]="b.current">
+            <span class="icon sm" style="color:var(--dim);flex-shrink:0">
+              {{ b.current ? 'radio_button_checked' : 'radio_button_unchecked' }}
+            </span>
+            <span class="name" [title]="b.name">{{ b.name }}</span>
+            @if (b.current)    { <span class="tag">atual</span> }
+            @if (!b.current && isProtected(b)) { <span class="tag muted">protegida</span> }
+            @if (!isProtected(b)) {
+              <button class="btn danger" (click)="deleteBranch(b)" title="Apagar branch">
+                <span class="icon sm">delete</span>
+              </button>
+            }
+          </div>
+        }
+      }
+    </div>
+    <div class="foot">
+      <button class="btn" (click)="close.emit()">Fechar</button>
+    </div>
+  </div>
+</div>

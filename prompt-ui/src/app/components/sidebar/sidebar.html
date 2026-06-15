@@ -1,0 +1,20 @@
+<div class="section">
+  <h3>Sessão</h3>
+  <div class="row"><span class="label">Projeto</span><span class="value" [title]="session().project_path">{{ projectName() }}</span></div>
+  <div class="row"><span class="label">Branch</span><span class="value">{{ session().branch || '—' }}</span></div>
+  <div class="row"><span class="label">Pedidos</span><span class="value">{{ session().requests.length }}</span></div>
+</div>
+
+<div class="section history-section">
+  <h3>Histórico</h3>
+  <div class="history">
+    @for (r of session().requests; track r.num) {
+      <div class="hist-item" [class.active]="r.status === '🔄'">
+        <span class="num">#{{ r.num }}</span>
+        <span class="req" [title]="r.request">{{ r.request }}</span>
+        <span class="st">{{ r.status }}</span>
+        <span class="time">{{ r.elapsed != null ? r.elapsed + 's' : '' }}</span>
+      </div>
+    }
+  </div>
+</div>

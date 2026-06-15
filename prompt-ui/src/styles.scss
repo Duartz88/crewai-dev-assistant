@@ -1,0 +1,115 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  // ── Backgrounds — warm dark (DBeaver / Claude Desktop style) ──
+  --bg:     #1c1c1c;   // main canvas
+  --bg2:    #252525;   // panels, header, sidebar
+  --bg3:    #2e2e2e;   // inputs, code blocks, cards
+  --border: #3d3d3d;   // separators
+
+  // ── Text ──
+  --text:   #e8e6e3;   // warm white (Claude Desktop)
+  --dim:    #888784;   // muted / secondary
+
+  // ── Primary action — Claude orange ──
+  --accent:  #d97757;  // buttons, active states, h1
+  --accent2: #c5a882;  // warm gold — secondary accent (branches)
+
+  // ── Semantic ──
+  --green:  #5fb878;   // success / approved
+  --red:    #e06c75;   // error / rejected
+  --yellow: #e5a543;   // warning / pending input
+
+  // ── Output line colors (DBeaver-inspired) ──
+  --out-agent: #cc7832;  // DBeaver keyword orange — agent headers
+  --out-tool:  #a8b5c4;  // DBeaver type blue-gray — tool calls
+  --out-head:  #d97757;  // Claude orange — phase separators
+}
+
+// ── Material Symbols ───────────────────────────────────────────────────────
+.icon {
+  font-family: 'Material Symbols Rounded';
+  font-weight: normal; font-style: normal;
+  font-size: 18px; line-height: 1;
+  letter-spacing: normal; text-transform: none;
+  display: inline-block; white-space: nowrap;
+  word-wrap: normal; direction: ltr;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
+  vertical-align: middle; user-select: none;
+  color: currentColor;
+  &.sm { font-size: 16px; }
+  &.lg { font-size: 20px; }
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+// ── Badge ──────────────────────────────────────────────────────────────────
+.badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--dim); font-family: monospace;
+  &.active  { border-color: var(--accent);  color: var(--accent); }
+  &.running { border-color: var(--yellow);  color: var(--yellow); animation: pulse 1.5s infinite; }
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+// ── Buttons ────────────────────────────────────────────────────────────────
+.btn {
+  border: 1px solid var(--border); color: var(--text); background: var(--bg3);
+  padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  transition: background 0.15s, opacity 0.15s;
+  &:hover { background: var(--border); }
+
+  &.primary {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    font-weight: 600;
+    &:hover { opacity: .88; }
+  }
+  &.success {
+    background: var(--green); color: #0e1a12; border: none; font-weight: 600;
+    &:hover { opacity: .88; }
+  }
+  &.danger {
+    background: transparent; border-color: var(--red); color: var(--red);
+    &:hover { background: var(--red); color: #fff; }
+  }
+  &:disabled { opacity: .4; cursor: default; pointer-events: none; }
+}
+
+// ── Modal backdrop ─────────────────────────────────────────────────────────
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, .65);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+}
+
+// ── Modal box ──────────────────────────────────────────────────────────────
+.modal-box {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 24px;
+
+  h2, h3 { margin-bottom: 16px; font-size: 15px; font-weight: 600; }
+
+  label {
+    display: block; font-size: 11px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px;
+  }
+
+  input[type=text] {
+    width: 100%; background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: 6px;
+    font-size: 13px; outline: none; margin-bottom: 12px;
+    &:focus { border-color: var(--accent); }
+    &::placeholder { color: var(--dim); }
+  }
+
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+}

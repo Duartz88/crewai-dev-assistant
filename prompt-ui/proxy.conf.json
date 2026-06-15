@@ -1,0 +1,10 @@
+{
+  "/api": {
+    "target": "http://127.0.0.1:7777",
+    "secure": false
+  },
+  "/stream": {
+    "target": "http://127.0.0.1:7777",
+    "secure": false
+  }
+}

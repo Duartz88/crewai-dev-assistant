@@ -1,0 +1,13 @@
+<div class="modal-backdrop" style="z-index:200">
+  <div class="box">
+    <h3><span class="icon sm" style="margin-right:6px">save</span>Commit da sessão</h3>
+    <input type="text" [(ngModel)]="message" placeholder="Mensagem do commit (opcional)"
+           (keydown.enter)="doCommit()" />
+    <div class="btns">
+      <button class="btn" (click)="cancel.emit()">Cancelar</button>
+      <button class="btn success" (click)="doCommit()">
+        <span class="icon sm">check</span> Commit
+      </button>
+    </div>
+  </div>
+</div>

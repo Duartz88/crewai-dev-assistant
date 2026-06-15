@@ -1,0 +1,25 @@
+<div class="modal-backdrop" style="z-index:200">
+  <div class="box">
+    <h3><span class="icon sm" style="margin-right:6px">pause_circle</span>Crew aguarda resposta</h3>
+    <div class="prompt-label">Contexto (output recente)</div>
+    <div class="context" #ctx>{{ data().context || '(sem contexto)' }}</div>
+    <div class="prompt-label">Pergunta</div>
+    <pre class="prompt-text">{{ data().prompt || 'Aprovas?' }}</pre>
+    <input type="text" [(ngModel)]="reply" placeholder="Resposta..." #inp
+           (keydown.enter)="send()" />
+    <div class="btns">
+      @if (isYesNo()) {
+        <button class="btn danger"  (click)="send('n')">
+          <span class="icon sm">close</span> Não
+        </button>
+        <button class="btn success" (click)="send('s')">
+          <span class="icon sm">check</span> Sim
+        </button>
+      } @else {
+        <button class="btn primary" (click)="send()">
+          <span class="icon sm">send</span> Enviar
+        </button>
+      }
+    </div>
+  </div>
+</div>

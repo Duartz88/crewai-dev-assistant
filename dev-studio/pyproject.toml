@@ -1,0 +1,21 @@
+[project]
+name = "dev-studio"
+version = "0.1.0"
+description = "Dev Studio — CrewAI backend with architect, developer and reviewer agents"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]>=1.14.0,<2.0.0",
+    "rich>=13.0.0",
+    "flask>=3.0.0",
+]
+
+[project.scripts]
+run_crew    = "dev_studio.main:run"
+train_crew  = "dev_studio.main:train"
+replay_crew = "dev_studio.main:replay"
+test_crew   = "dev_studio.main:test"
+serve       = "dev_studio.api.app:run_server"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

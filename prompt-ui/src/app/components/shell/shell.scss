@@ -1,0 +1,42 @@
+:host { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 9px 16px;
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+
+  h1 {
+    font-size: 14px; font-weight: 700; color: var(--accent);
+    letter-spacing: .01em;
+  }
+  .spacer { flex: 1; }
+
+  .project-badge {
+    cursor: pointer; display: flex; align-items: center; gap: 4px;
+    transition: border-color 0.12s, color 0.12s;
+    &:hover { border-color: var(--accent); color: var(--accent); }
+  }
+
+  .btn-stop {
+    color: var(--red); border-color: var(--red); padding: 3px 8px;
+    &:hover { background: var(--red); color: #fff; }
+  }
+
+  .lm-badge {
+    font-size: 11px; display: flex; align-items: center; gap: 4px;
+    border: 1px solid var(--border);
+    &.lm-ok  { color: var(--green); border-color: var(--green); }
+    &.lm-err { color: var(--red);   border-color: var(--red);   }
+  }
+}
+
+.layout { display: flex; flex: 1; overflow: hidden; }
+
+.resize-handle {
+  width: 5px; flex-shrink: 0; cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s;
+  &:hover { background: var(--accent); }
+  &:active { background: var(--accent); }
+}
