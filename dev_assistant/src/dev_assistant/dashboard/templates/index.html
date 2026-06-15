@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevAssistant</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+    --border: #30363d; --text: #c9d1d9; --dim: #6e7681;
+    --green: #3fb950; --blue: #58a6ff; --yellow: #d29922;
+    --red: #f85149; --purple: #bc8cff; --orange: #f0883e;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
+         font-size: 14px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Header ── */
+  header { background: var(--bg2); border-bottom: 1px solid var(--border);
+           padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  header h1 { font-size: 15px; font-weight: 600; color: var(--blue); }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; border: 1px solid var(--border);
+           color: var(--dim); font-family: monospace; }
+  .badge.green { border-color: var(--green); color: var(--green); }
+  .badge.running { border-color: var(--yellow); color: var(--yellow); animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+  .spacer { flex: 1; }
+  header button { background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                  padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  header button:hover { background: var(--border); }
+  header button.primary { background: var(--blue); color: #000; border-color: var(--blue); }
+  header button.primary:hover { opacity: .85; }
+
+  /* ── Layout ── */
+  .layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  aside { width: 260px; background: var(--bg2); border-right: 1px solid var(--border);
+          display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+  .aside-section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .aside-section h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+                      color: var(--dim); margin-bottom: 8px; }
+  .info-row { display: flex; gap: 6px; margin-bottom: 4px; font-size: 12px; }
+  .info-row .label { color: var(--dim); flex-shrink: 0; }
+  .info-row .value { color: var(--text); font-family: monospace; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
+  .history { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .hist-item { padding: 6px 14px; font-size: 12px; border-left: 2px solid transparent;
+               cursor: default; display: flex; gap: 8px; align-items: flex-start; }
+  .hist-item.active { border-left-color: var(--blue); background: rgba(88,166,255,.06); }
+  .hist-item .num { color: var(--dim); flex-shrink: 0; font-family: monospace; }
+  .hist-item .req { color: var(--text); overflow: hidden; text-overflow: ellipsis;
+                    white-space: nowrap; flex: 1; }
+  .hist-item .time { color: var(--dim); font-size: 11px; flex-shrink: 0; }
+  .hist-item .st { flex-shrink: 0; }
+  .commit-btn { margin: 10px 14px; background: var(--green); border: none; color: #000;
+                padding: 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
+                font-weight: 600; width: calc(100% - 28px); }
+  .commit-btn:hover { opacity: .85; }
+  .commit-btn:disabled { opacity: .4; cursor: default; }
+
+  /* ── Main output ── */
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #output { flex: 1; overflow-y: auto; padding: 14px 16px; font-family: 'Cascadia Code', 'Consolas', monospace;
+            font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+  #output:empty::before { content: 'Aguardando primeiro pedido...'; color: var(--dim); font-style: italic; }
+
+  /* Output line styles */
+  .line { display: block; }
+  .line.agent  { color: var(--purple); font-weight: 600; }
+  .line.tool   { color: var(--blue); }
+  .line.ok     { color: var(--green); }
+  .line.err    { color: var(--red); }
+  .line.warn   { color: var(--yellow); }
+  .line.head   { color: var(--orange); font-weight: 600; border-top: 1px solid var(--border);
+                 padding-top: 8px; margin-top: 4px; }
+  .line.dim    { color: var(--dim); }
+
+  /* ── Input bar ── */
+  .input-bar { background: var(--bg2); border-top: 1px solid var(--border);
+               padding: 10px 14px; display: flex; gap: 8px; flex-shrink: 0; }
+  .input-bar input { flex: 1; background: var(--bg3); border: 1px solid var(--border);
+                     color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px;
+                     outline: none; }
+  .input-bar input:focus { border-color: var(--blue); }
+  .input-bar input::placeholder { color: var(--dim); }
+  .input-bar button { background: var(--blue); border: none; color: #000; padding: 8px 16px;
+                      border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
+  .input-bar button:hover { opacity: .85; }
+  .input-bar button:disabled { opacity: .4; cursor: default; }
+
+  /* ── Setup overlay ── */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex;
+             align-items: center; justify-content: center; z-index: 100; }
+  .overlay.hidden { display: none; }
+  .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+           padding: 24px; width: 480px; }
+  .modal h2 { font-size: 16px; margin-bottom: 16px; color: var(--blue); }
+  .modal label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  .modal input { width: 100%; background: var(--bg3); border: 1px solid var(--border);
+                 color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px;
+                 outline: none; margin-bottom: 16px; font-family: monospace; }
+  .modal input:focus { border-color: var(--blue); }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal .actions button { padding: 8px 16px; border-radius: 6px; border: none;
+                           cursor: pointer; font-size: 13px; }
+  .modal .actions .ok { background: var(--blue); color: #000; font-weight: 600; }
+
+  /* ── Input prompt modal ── */
+  #promptModal { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+                 align-items: center; justify-content: center; z-index: 200; }
+  #promptModal.show { display: flex; }
+  #promptModal .box { background: var(--bg2); border: 1px solid var(--yellow);
+                      border-radius: 10px; padding: 24px; width: 900px; max-width: 96vw; max-height: 90vh;
+                      display: flex; flex-direction: column; overflow: hidden; }
+  #promptModal h3 { color: var(--yellow); margin-bottom: 12px; font-size: 14px; }
+  #promptModal .context { background: var(--bg3); padding: 12px; border-radius: 6px;
+                          font-size: 13px; margin-bottom: 10px; font-family: 'Cascadia Code', monospace;
+                          color: var(--text); white-space: pre-wrap; flex: 1; overflow-y: auto;
+                          border-left: 3px solid var(--blue); min-height: 200px; }
+  #promptModal .prompt-label { font-size: 11px; color: var(--dim); margin-bottom: 6px;
+                                text-transform: uppercase; letter-spacing: .05em; }
+  #promptModal pre { background: var(--bg3); padding: 8px 10px; border-radius: 6px;
+                     font-size: 13px; margin-bottom: 12px; color: var(--yellow);
+                     font-family: monospace; border-left: 3px solid var(--yellow); }
+  #promptModal input { width: 100%; background: var(--bg3); border: 1px solid var(--border);
+                       color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px;
+                       outline: none; margin-bottom: 12px; }
+  #promptModal input:focus { border-color: var(--yellow); }
+  #promptModal .btns { display: flex; gap: 8px; justify-content: flex-end; }
+  #promptModal .btns button { padding: 7px 14px; border-radius: 6px; border: none;
+                              cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-yes { background: var(--green); color: #000; }
+  .btn-no  { background: var(--red);   color: #fff; }
+  .btn-send { background: var(--blue); color: #000; }
+
+  /* ── Commit modal ── */
+  #commitModal { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+                 align-items: center; justify-content: center; z-index: 200; }
+  #commitModal.show { display: flex; }
+  #commitModal .box { background: var(--bg2); border: 1px solid var(--green);
+                      border-radius: 10px; padding: 24px; width: 480px; }
+  #commitModal h3 { color: var(--green); margin-bottom: 12px; }
+  #commitModal input { width: 100%; background: var(--bg3); border: 1px solid var(--border);
+                       color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px;
+                       outline: none; margin-bottom: 14px; }
+  #commitModal .btns { display: flex; gap: 8px; justify-content: flex-end; }
+  #commitModal .btns button { padding: 7px 14px; border-radius: 6px; border: none;
+                              cursor: pointer; font-size: 13px; font-weight: 600; }
+
+  /* ── Branches modal ── */
+  #branchModal { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+                 align-items: center; justify-content: center; z-index: 200; }
+  #branchModal.show { display: flex; }
+  #branchModal .box { background: var(--bg2); border: 1px solid var(--purple);
+                      border-radius: 10px; padding: 24px; width: 520px; max-height: 80vh;
+                      display: flex; flex-direction: column; }
+  #branchModal h3 { color: var(--purple); margin-bottom: 16px; }
+  #branchList { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+                margin-bottom: 16px; }
+  .branch-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+                background: var(--bg3); border-radius: 6px; border: 1px solid var(--border); }
+  .branch-row.current { border-color: var(--purple); }
+  .branch-name { flex: 1; font-family: monospace; font-size: 13px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .branch-row.current .branch-name { color: var(--purple); }
+  .branch-tag { font-size: 10px; padding: 2px 6px; border-radius: 10px;
+                background: var(--purple); color: #000; font-weight: 700; }
+  .branch-del { background: transparent; border: 1px solid var(--red); color: var(--red);
+                padding: 3px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+  .branch-del:hover { background: var(--red); color: #fff; }
+  .branch-del:disabled { opacity: .4; cursor: default; }
+  #branchModal .foot { display: flex; justify-content: flex-end; }
+  #branchModal .foot button { padding: 7px 16px; border-radius: 6px; border: none;
+                              cursor: pointer; font-size: 13px; background: var(--bg3);
+                              color: var(--text); }
+  #branchModal .foot button:hover { background: var(--border); }
+
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+</style>
+</head>
+<body>
+
+<!-- Setup overlay -->
+<div class="overlay" id="setupOverlay">
+  <div class="modal">
+    <h2>🤖 DevAssistant</h2>
+    <label>Caminho do projeto</label>
+    <input id="setupPath" type="text" placeholder="D:/_DEV/Projects/FamilyHub" />
+    <div class="actions">
+      <button class="ok" onclick="startSession()">Iniciar sessão</button>
+    </div>
+  </div>
+</div>
+
+<!-- Input/Approval prompt modal -->
+<div id="promptModal">
+  <div class="box">
+    <h3>⏸️ Crew aguarda resposta</h3>
+    <div class="prompt-label">Contexto (output recente)</div>
+    <div class="context" id="promptContext"></div>
+    <div class="prompt-label">Pergunta</div>
+    <pre id="promptText"></pre>
+    <input id="promptInput" type="text" placeholder="Resposta..." />
+    <div class="btns">
+      <button class="btn-no"  onclick="respondInput('n')">Não (n)</button>
+      <button class="btn-yes" onclick="respondInput('s')">Sim (s)</button>
+      <button class="btn-send" onclick="respondInput(null)">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Branches modal -->
+<div id="branchModal">
+  <div class="box">
+    <h3>🌿 Gerir branches</h3>
+    <div id="branchList">
+      <div style="color:var(--dim);font-size:12px">A carregar...</div>
+    </div>
+    <div class="foot">
+      <button onclick="closeBranches()">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Commit modal -->
+<div id="commitModal">
+  <div class="box">
+    <h3>💾 Commit da sessão</h3>
+    <input id="commitMsg" type="text" placeholder="Mensagem do commit (opcional)" />
+    <div class="btns">
+      <button style="background:var(--border);color:var(--text)" onclick="closeCommit()">Cancelar</button>
+      <button class="btn-yes" onclick="doCommit()">Commit</button>
+    </div>
+  </div>
+</div>
+
+<!-- Header -->
+<header>
+  <h1>🤖 DevAssistant</h1>
+  <span class="badge" id="badgeProject">—</span>
+  <span class="badge" id="badgeBranch">—</span>
+  <span class="badge" id="badgeStatus">Idle</span>
+  <div class="spacer"></div>
+  <button onclick="clearOutput()">Limpar output</button>
+  <button onclick="openBranches()">🌿 Branches</button>
+  <button onclick="newSession()">+ Nova sessão</button>
+  <button class="primary" onclick="document.getElementById('commitModal').classList.add('show')">
+    💾 Commit sessão
+  </button>
+</header>
+
+<!-- Layout -->
+<div class="layout">
+  <!-- Sidebar -->
+  <aside>
+    <div class="aside-section">
+      <h3>Sessão</h3>
+      <div class="info-row"><span class="label">Projeto</span><span class="value" id="infoProject">—</span></div>
+      <div class="info-row"><span class="label">Branch</span><span class="value" id="infoBranch">—</span></div>
+      <div class="info-row"><span class="label">Pedidos</span><span class="value" id="infoCount">0</span></div>
+    </div>
+    <div class="aside-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+      <h3>Histórico</h3>
+      <div class="history" id="history"></div>
+    </div>
+    <button class="commit-btn" id="commitBtn"
+            onclick="document.getElementById('commitModal').classList.add('show')">
+      💾 Commit e fechar sessão
+    </button>
+  </aside>
+
+  <!-- Main -->
+  <main>
+    <div id="output"></div>
+    <div class="input-bar">
+      <input id="requestInput" type="text" placeholder="🎯 Descreve o que queres implementar..."
+             onkeydown="if(event.key==='Enter') submitRequest()" />
+      <button id="submitBtn" onclick="submitRequest()">Enviar ▶</button>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let running = false;
+let currentPrompt = '';
+let fixFeedback = '';
+
+// ── SSE ────────────────────────────────────────────────────────────────────
+const es = new EventSource('/stream');
+es.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  handleMessage(msg);
+};
+
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'session_state':
+      applySession(msg.session);
+      if (msg.session.project_path) hideSetup();
+      break;
+    case 'session_start':
+      updateSession(msg.project, msg.branch);
+      appendLine(`\n🌿  Sessão iniciada — branch: ${msg.branch}`, 'head');
+      break;
+    case 'output':
+      appendOutput(msg.text);
+      break;
+    case 'request_start':
+      setRunning(true);
+      appendLine(`\n${'─'.repeat(50)}\n🎯  Pedido #${msg.num}: ${msg.request}`, 'head');
+      break;
+    case 'request_done':
+      setRunning(false);
+      appendLine(`\n${msg.status}  Concluído em ${msg.elapsed}s`, msg.status === '✅' ? 'ok' : 'err');
+      updateHistory(msg.requests);
+      break;
+    case 'fix_available':
+      fixFeedback = msg.feedback;
+      if (confirm('O Reviewer encontrou problemas. Iniciar ciclo de correção?')) runFix();
+      break;
+    case 'fix_done':
+      setRunning(false);
+      appendLine('\n🔧  Ciclo de correção concluído.', 'ok');
+      break;
+    case 'input_needed':
+      showPrompt(msg.prompt, msg.context);
+      break;
+    case 'input_done':
+      hidePrompt();
+      break;
+    case 'ping': break;
+  }
+}
+
+// ── Output rendering ───────────────────────────────────────────────────────
+const out = document.getElementById('output');
+
+function appendOutput(text) {
+  text.split('\n').forEach(line => {
+    if (!line.trim()) return;
+    appendLine(line, classifyLine(line));
+  });
+  out.scrollTop = out.scrollHeight;
+}
+
+function appendLine(text, cls = '') {
+  const span = document.createElement('span');
+  span.className = 'line' + (cls ? ' ' + cls : '');
+  span.textContent = text;
+  out.appendChild(span);
+  out.appendChild(document.createTextNode('\n'));
+  out.scrollTop = out.scrollHeight;
+}
+
+function classifyLine(line) {
+  const l = line.toLowerCase();
+  if (l.includes('agent:') || l.includes('arquiteto') || l.includes('programador') || l.includes('revisor')) return 'agent';
+  if (l.includes('tool:') || l.includes('action:') || l.includes('→') || l.startsWith('>')) return 'tool';
+  if (l.includes('✅') || l.includes('aprovado') || l.includes('válid')) return 'ok';
+  if (l.includes('❌') || l.includes('erro') || l.includes('error')) return 'err';
+  if (l.includes('⚠️') || l.includes('aviso') || l.includes('warn')) return 'warn';
+  if (l.includes('##') || l.includes('===') || l.includes('---')) return 'dim';
+  return '';
+}
+
+function clearOutput() { out.innerHTML = ''; }
+
+// ── Session ────────────────────────────────────────────────────────────────
+function applySession(s) {
+  if (s.project_path) updateSession(s.project_path, s.branch);
+  if (s.requests) updateHistory(s.requests);
+}
+
+function updateSession(project, branch) {
+  const name = project.split(/[\\/]/).pop();
+  document.getElementById('badgeProject').textContent = name;
+  document.getElementById('badgeBranch').textContent = branch || '—';
+  document.getElementById('infoProject').textContent = name;
+  document.getElementById('infoBranch').textContent = branch || '—';
+}
+
+function updateHistory(requests) {
+  document.getElementById('infoCount').textContent = requests.length;
+  const h = document.getElementById('history');
+  h.innerHTML = '';
+  requests.forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'hist-item' + (r.status === '🔄' ? ' active' : '');
+    d.innerHTML = `<span class="num">#${r.num}</span>
+                   <span class="req" title="${r.request}">${r.request}</span>
+                   <span class="st">${r.status}</span>
+                   <span class="time">${r.elapsed != null ? r.elapsed + 's' : ''}</span>`;
+    h.appendChild(d);
+  });
+}
+
+function setRunning(val) {
+  running = val;
+  document.getElementById('submitBtn').disabled = val;
+  document.getElementById('requestInput').disabled = val;
+  const badge = document.getElementById('badgeStatus');
+  badge.textContent = val ? 'A correr...' : 'Idle';
+  badge.className = 'badge' + (val ? ' running' : '');
+}
+
+// ── Session setup ──────────────────────────────────────────────────────────
+function hideSetup() { document.getElementById('setupOverlay').classList.add('hidden'); }
+
+async function startSession() {
+  const path = document.getElementById('setupPath').value.trim();
+  if (!path) return;
+  const r = await fetch('/api/session/start', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ project_path: path })
+  });
+  const data = await r.json();
+  if (data.error) { alert(data.error); return; }
+  hideSetup();
+}
+
+// ── Submit request ─────────────────────────────────────────────────────────
+async function submitRequest() {
+  const inp = document.getElementById('requestInput');
+  const req = inp.value.trim();
+  if (!req || running) return;
+  inp.value = '';
+  const r = await fetch('/api/request/run', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ request: req })
+  });
+  const data = await r.json();
+  if (data.error) appendLine('❌ ' + data.error, 'err');
+}
+
+// ── Fix cycle ──────────────────────────────────────────────────────────────
+async function runFix() {
+  await fetch('/api/request/fix', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ feedback: fixFeedback })
+  });
+  setRunning(true);
+}
+
+// ── Input/Approval prompt ──────────────────────────────────────────────────
+function showPrompt(prompt, context) {
+  currentPrompt = prompt;
+  document.getElementById('promptText').textContent = prompt || 'Aprovas?';
+  document.getElementById('promptInput').value = '';
+
+  // Show last lines of context, scroll to bottom
+  const ctx = document.getElementById('promptContext');
+  ctx.textContent = context || '(sem contexto adicional)';
+  setTimeout(() => { ctx.scrollTop = ctx.scrollHeight; }, 50);
+
+  const modal = document.getElementById('promptModal');
+  modal.classList.add('show');
+
+  // Auto-detect s/n prompts
+  const isYesNo = /\(s\/n\)/i.test(prompt) || !prompt.trim();
+  document.querySelector('.btn-yes').style.display  = isYesNo ? '' : 'none';
+  document.querySelector('.btn-no').style.display   = isYesNo ? '' : 'none';
+  document.querySelector('.btn-send').style.display = isYesNo ? 'none' : '';
+
+  setTimeout(() => document.getElementById('promptInput').focus(), 100);
+}
+
+function hidePrompt() {
+  document.getElementById('promptModal').classList.remove('show');
+}
+
+async function respondInput(value) {
+  const response = value !== null ? value : document.getElementById('promptInput').value;
+  await fetch('/api/input/respond', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ response })
+  });
+  hidePrompt();
+}
+
+document.getElementById('promptInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') respondInput(null);
+});
+
+// ── Commit ─────────────────────────────────────────────────────────────────
+function closeCommit() { document.getElementById('commitModal').classList.remove('show'); }
+
+async function doCommit() {
+  const msg = document.getElementById('commitMsg').value.trim();
+  const r = await fetch('/api/session/commit', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ message: msg })
+  });
+  const data = await r.json();
+  closeCommit();
+  if (data.error) appendLine('❌ Commit falhou: ' + data.error, 'err');
+  else appendLine(`✅ Commit feito na branch ${data.branch}`, 'ok');
+}
+
+// ── Branches ───────────────────────────────────────────────────────────────
+async function openBranches() {
+  document.getElementById('branchModal').classList.add('show');
+  await loadBranches();
+}
+
+function closeBranches() {
+  document.getElementById('branchModal').classList.remove('show');
+}
+
+async function loadBranches() {
+  const list = document.getElementById('branchList');
+  list.innerHTML = '<div style="color:var(--dim);font-size:12px">A carregar...</div>';
+  const r = await fetch('/api/branches');
+  const data = await r.json();
+  list.innerHTML = '';
+
+  if (!data.branches || data.branches.length === 0) {
+    list.innerHTML = '<div style="color:var(--dim);font-size:12px">Nenhuma branch encontrada.</div>';
+    return;
+  }
+
+  // Current branch first, then rest alphabetically
+  const sorted = [...data.branches].sort((a, b) => {
+    if (a.current) return -1;
+    if (b.current) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const PROTECTED = /^(main|master|develop|dev)$/i;
+
+  sorted.forEach(b => {
+    const protected_ = b.current || PROTECTED.test(b.name);
+    const row = document.createElement('div');
+    row.className = 'branch-row' + (b.current ? ' current' : '');
+    row.dataset.name = b.name;
+    row.innerHTML = `
+      <span class="branch-name" title="${b.name}">${b.name}</span>
+      ${b.current ? '<span class="branch-tag">atual</span>' : ''}
+      ${PROTECTED.test(b.name) && !b.current ? '<span class="branch-tag" style="background:var(--dim)">protegida</span>' : ''}
+      ${protected_ ? '' : `<button class="branch-del" onclick="deleteBranch('${b.name.replace(/'/g,"\\'")}', this)">🗑 Apagar</button>`}`;
+    list.appendChild(row);
+  });
+}
+
+async function deleteBranch(name, btn) {
+  if (!confirm(`Apagar branch "${name}"?`)) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  let r = await fetch('/api/branches/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, force: false })
+  });
+  let data = await r.json();
+
+  if (data.error === 'unmerged') {
+    if (!confirm(`A branch "${name}" tem commits não merged.\nForçar apagar mesmo assim?`)) {
+      btn.disabled = false;
+      btn.textContent = '🗑 Apagar';
+      return;
+    }
+    r = await fetch('/api/branches/delete', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, force: true })
+    });
+    data = await r.json();
+  }
+
+  if (data.ok) {
+    const row = document.querySelector(`.branch-row[data-name="${name}"]`);
+    if (row) row.remove();
+    appendLine(`🗑  Branch apagada: ${name}`, 'warn');
+    // Se era a branch da sessão atual, limpar histórico e badge
+    if (data.was_session_branch) {
+      updateHistory([]);
+      document.getElementById('badgeBranch').textContent = '—';
+      document.getElementById('infoBranch').textContent = '—';
+      appendLine('⚠️  Histórico da sessão limpo (branch apagada).', 'warn');
+    }
+  } else {
+    alert('Erro: ' + (data.error || 'Falha desconhecida'));
+    btn.disabled = false;
+    btn.textContent = '🗑 Apagar';
+  }
+}
+
+// ── New session ────────────────────────────────────────────────────────────
+async function newSession() {
+  if (!confirm('Iniciar nova sessão? O histórico atual será apagado.')) return;
+  await fetch('/api/session/clear', { method: 'POST' });
+  clearOutput();
+  document.getElementById('setupOverlay').classList.remove('hidden');
+  const defaultPath = '{{ default_project }}';
+  document.getElementById('setupPath').value = defaultPath || '';
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+window.addEventListener('load', async () => {
+  const r = await fetch('/api/status');
+  const data = await r.json();
+  if (data.session.project_path) {
+    hideSetup();
+    applySession(data.session);
+    appendLine(`↩️  Sessão retomada: ${data.session.project_path}`, 'ok');
+    if (data.session.branch) appendLine(`🌿  Branch: ${data.session.branch}`, 'dim');
+  } else {
+    const defaultPath = '{{ default_project }}';
+    if (defaultPath) document.getElementById('setupPath').value = defaultPath;
+  }
+});
+</script>
+</body>
+</html>
