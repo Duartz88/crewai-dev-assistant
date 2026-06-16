@@ -228,6 +228,7 @@ def run_agent_endpoint():
             raw = str(result.raw) if hasattr(result, "raw") else str(result)
             _last_agent_output = raw
             _last_agent_name = agent
+            entry["output"] = raw
             capture.sse_queue.put({"type": "context_updated", "from_agent": agent, "agent_label": label})
             entry["status"] = "done"
         except KeyboardInterrupt:

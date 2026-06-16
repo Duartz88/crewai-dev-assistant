@@ -28,17 +28,49 @@ design_task:
     Usa a ferramenta git_log com o caminho {project_path}.
     Identifica o que mudou recentemente e quem tocou em quê.
 
-    PASSO 3 — Estrutura do projeto actual
-    Usa a ferramenta list_project_structure com o caminho {project_path}.
-    Mapeia os diretórios e ficheiros existentes.
+    PASSO 3 — Estrutura do projeto actual [OBRIGATÓRIO]
+    Chama list_project_structure com o caminho {project_path}.
+    NÃO SALTES ESTE PASSO mesmo que já conheças a estrutura.
 
-    PASSO 4 — Leitura de ficheiros relevantes do projeto actual
-    Usa a ferramenta read_file para ler os ficheiros que o pedido vai tocar.
-    Regista todos os endpoints, funções e classes existentes nesses ficheiros.
+    PASSO 4 — Leitura de ficheiros relevantes [OBRIGATÓRIO]
+    Para CADA ficheiro mencionado no pedido ou necessário para o plano:
+    - Chama read_file com o caminho COMPLETO: {project_path}/caminho/ficheiro
+    - NUNCA uses conteúdo que viste noutros contextos (git diff, memória, etc.)
+      como substituto de uma leitura directa — lê SEMPRE com read_file
+    - Se read_file retornar "⚠️ TRUNCADO": o ficheiro tem mais linhas.
+      TENS DE chamar read_file novamente com start_line=<próxima linha indicada>
+      e repetir até leres o ficheiro completo. Só depois podes concluir o que existe.
+    - Se o pedido pedir para "ler" ou "entender" um ficheiro específico,
+      TENS DE CHAMAR read_file para esse ficheiro. Não há excepção.
+    - Se a memória do projecto ou grep indicam que algo já existe,
+      TENS DE ler esse algo com read_file antes de propor qualquer alteração.
+      "Existe na memória" ≠ "implementação completa" — verifica sempre.
+    - Antes de propor criar novos ficheiros (screens, componentes), lê um ficheiro
+      existente do mesmo tipo para garantir que segues o padrão do projecto.
+
+    PASSO 4b — Verificação de endpoints/API [OBRIGATÓRIO se o pedido envolve dados]
+    Se o pedido envolve listar, mostrar ou buscar dados da API:
+    1. Usa list_project_structure para localizar os routers do backend
+    2. Lê os routers relevantes com read_file
+    3. Para CADA endpoint que vais propor no plano, chama mark_endpoint_verified
+       - Se devolver ✅ → inclui o endpoint no plano com ficheiro e linha
+       - Se devolver ❌ → o endpoint não existe; propõe criá-lo ou usa outro
+    Sem chamar mark_endpoint_verified, o plano está incompleto.
+    "Preciso verificar" ou "vou verificar" no plano = NÃO FIZESTE ESTE PASSO.
 
     PASSO 5 — Produz o plano
     Com base em TUDO o que leste (projectos externos + projecto actual), produz o plano.
-    Para tarefas de comparação: documenta diferenças concretas com trechos de código de ambos os lados.
+    Para tarefas de comparação: documenta diferenças concretas com trechos de código.
+
+    VERIFICAÇÃO ANTES DE RESPONDER:
+    - [ ] Chamei read_project_memory? (PASSO 1)
+    - [ ] Chamei git_log? (PASSO 2)
+    - [ ] Chamei list_project_structure? (PASSO 3)
+    - [ ] Chamei read_file para todos os ficheiros relevantes? (PASSO 4)
+    - [ ] Se o pedido envolve dados da API: chamei mark_endpoint_verified
+          para cada endpoint proposto? (PASSO 4b)
+          Se NÃO → chama agora. O plano sem mark_endpoint_verified será rejeitado.
+    Se algum NÃO, executa-o agora antes de produzir o plano.
 
     RESTRIÇÕES:
     - Não propões criar diretórios de topo a não ser que o pedido o exija explicitamente
@@ -54,6 +86,11 @@ design_task:
     ## Pedido
     [Resumo claro do que foi pedido]
 
+    ## Endpoints verificados (obrigatório se o pedido envolve dados da API)
+    Preenche com os resultados de mark_endpoint_verified, um por linha:
+    - `GET /points/MEMBER_ID` — api/app/routers/points.py linha 27 — PointsBalanceOut
+    (omite esta secção se o pedido não envolver endpoints da API)
+
     ## Análise dos ficheiros existentes
     [Para cada ficheiro relevante: lista de endpoints/funções/classes que já existem e DEVEM ser preservados]
 
@@ -65,7 +102,17 @@ design_task:
     ### Ficheiros a MODIFICAR
     - `caminho/ficheiro.ext`
       - Preservar: [lista de o que não deve ser tocado]
-      - Adicionar/Alterar: [descrição precisa das mudanças]
+      - Localização exacta: linha ~N, função/componente `nomeDaFunção`
+      - Endpoint/serviço usado: `MÉTODO /caminho` encontrado em `router/ficheiro.py` linha ~N
+        (ou "não existe — criar endpoint com schema X")
+      - Código ACTUAL nessa localização (copiado do read_file):
+        ```
+        [trecho exacto que vai ser alterado]
+        ```
+      - Código DEPOIS da alteração:
+        ```
+        [como deve ficar]
+        ```
 
     ### Ficheiros a NÃO TOCAR
     - [razão pela qual não devem ser modificados]
@@ -88,21 +135,43 @@ implement_task:
 
     Implementa o pedido seguindo o plano/contexto acima. Para cada ficheiro, segue estes passos:
 
-    PARA CADA FICHEIRO A CRIAR:
-    1. Valida a sintaxe se for .py (usa validate_python_syntax)
-    2. Usa write_file para criar o ficheiro (apresenta conteúdo e pede aprovação)
+    PARA CADA FICHEIRO A CRIAR (novo, não existe):
+    1. Se for .py: valida com validate_python_syntax antes de escrever
+    2. Se for .ts/.tsx: valida com validate_typescript (com AMBOS os argumentos: filename E content)
+    3. Usa write_file para criar o ficheiro
 
-    PARA CADA FICHEIRO A MODIFICAR:
-    1. Lê o conteúdo COMPLETO com read_file — NUNCA escreves sem ler primeiro
-    2. Valida a sintaxe se for .py (usa validate_python_syntax com o conteúdo novo)
-    3. Valida se for .ts ou .tsx (usa validate_typescript)
-    4. Usa write_file para escrever (apresenta diff e pede aprovação)
+    PARA FICHEIROS DE SERVIÇO/API (api.ts, services/*.ts, *.service.ts):
+    1. Lê o ficheiro com read_file para ver os métodos que já existem
+    2. Para cada método NOVO que o plano pede para adicionar:
+       - Chama mark_endpoint_verified para confirmar que o endpoint backend existe
+       - Se ❌: não adiciones o método — informa que o endpoint não existe
+    3. Se o plano menciona um método que já existe no ficheiro → não o reescrevas
 
-    REGRAS ABSOLUTAS:
-    - Nunca crias ficheiros que não estejam no plano
-    - Nunca removes funções/endpoints que devem ser preservados
-    - Se a validação falhar, corriges o erro antes de escrever
-    - Se o utilizador recusar um diff, perguntas o que deve mudar
+    PARA CADA FICHEIRO A MODIFICAR (já existe):
+    1. Lê o conteúdo COMPLETO com read_file
+    2. RACIOCÍNIO OBRIGATÓRIO — antes de qualquer patch, escreve em texto:
+       a) "Localização: linha ~N, função/componente X"
+       b) "Código actual: [copia literalmente do read_file]"
+       c) "Vou alterar para: [o novo código]"
+       Se não identificas a localização exacta com base no plano, PARA e relê o plano.
+       Não patches por adivinhação.
+    3. ATENÇÃO — UI vs dados (erro comum):
+       - Alterações de UI (React Native/Angular): procura o componente JSX que RENDERIZA
+         o elemento (TouchableOpacity, onPress, onClick) — NÃO a função de carregamento
+       - Alterações de dados/API: procura a função que chama o endpoint
+       Nunca confundas rendering com data loading.
+    4. Usa patch_file com:
+       - old_snippet: copiado LITERALMENTE do read_file, com 2-3 linhas de contexto
+       - new_snippet: o mesmo trecho com APENAS as linhas alteradas
+    5. Se patch_file retornar "não encontrado": volta ao read_file, copia de novo, repete
+    6. Se patch_file retornar BLOQUEADO: corrige new_snippet antes de tentar outra vez
+
+    PROIBIDO:
+    - Usar write_file em ficheiros que já existem — usa patch_file
+    - Reescrever o ficheiro inteiro quando só 1-2 funções precisam de mudar
+    - Reconstruir código de memória — copia SEMPRE do read_file
+    - Criar ficheiros que não estejam no plano
+    - Patchar uma função diferente da identificada no plano do arquitecto
 
     NO FINAL:
     Usa write_project_memory para registar as decisões de implementação mais importantes.
@@ -156,15 +225,15 @@ fix_task:
 
     Para cada problema listado:
     1. Lê o ficheiro actual com read_file
-    2. Identifica exactamente o que precisa de mudar
-    3. Se for .py: usa validate_python_syntax antes de escrever
-    4. Se for .ts/.tsx: usa validate_typescript antes de escrever
-    5. Usa write_file para aplicar a correcção
+    2. Identifica o trecho MÍNIMO que contém o problema
+    3. Usa patch_file com old_snippet copiado LITERALMENTE do read_file e new_snippet corrigido
+    4. Se patch_file retornar BLOQUEADO (sintaxe): corrige new_snippet
+    5. Se patch_file retornar "não encontrado": relê o ficheiro, copia de novo
 
-    RESTRIÇÕES:
-    - Corrige APENAS os problemas listados — nada mais
-    - Não refactoras código que não esteja nos problemas identificados
-    - Não adicionas funcionalidades não pedidas
+    PROIBIDO:
+    - Usar write_file em ficheiros que já existem — usa patch_file
+    - Corrigir mais do que os problemas listados pelo Reviewer
+    - Reconstruir código de memória — copia SEMPRE do read_file
 
     Responde em português.
   expected_output: >

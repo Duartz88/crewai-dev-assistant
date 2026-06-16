@@ -21,32 +21,45 @@ _BUFFER_SIZE = 80
 
 ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-# ── Rich box-drawing cleanup ───────────────────────────────────────────────────
-_BOX_UUID = re.compile(r'^ID:\s+[0-9a-f\-]{36}$', re.I)
-_BOX_META = re.compile(r'^(Name|Agent Name|Task Name|Crew Name):\s+', re.I)
+# ── Box title suppression ──────────────────────────────────────────────────────
+_BOX_UUID  = re.compile(r'^ID:\s+[0-9a-f\-]{36}$', re.I)
+_BOX_META  = re.compile(r'^(Name|Agent Name|Task Name|Crew Name|Tool|Output):\s+', re.I)
 
-# Box titles whose entire box should be silently discarded (prefix-matched).
-# Prefix matching handles suffixes like "(#7)" in "Tool Execution Started (#7)".
+# Box titles whose content should be skipped entirely (prefix-matched).
 _BOX_SKIP_PREFIXES = (
     "crew execution started",
     "crew execution completed",
+    "crew completion",
     "task started",
     "task completion",
     "task completed",
-    "tool execution started",
     "tool execution completed",
     "agent started",
+    "agent final answer",   # suppress duplicate of final answer already in output
     "tracing status",
 )
 
+# Plain-text lines emitted by CrewAI's event bus (not in Rich boxes) that
+# duplicate information already shown by other means.
+_PLAIN_SKIP = frozenset({
+    "crew execution started", "crew execution completed", "crew completion",
+    "task started", "task completion", "task completed",
+    "agent started", "agent final answer", "tracing status",
+    # native tool event lines (appear as plain text alongside Rich boxes)
+    "tool execution started", "tool execution completed", "tool completed",
+    "tool completion",
+})
 
-def _should_skip_box(title: str) -> bool:
-    t = title.strip().lower()
-    return any(t == p or t.startswith(p + " ") or t.startswith(p + "(") for p in _BOX_SKIP_PREFIXES)
+# Regex patterns for plain-text noise lines that can't be matched exactly
+_PLAIN_SKIP_RE = re.compile(
+    r'^('
+    r'\[Finalize\]\s'           # "[Finalize] todos_count=..." internal CrewAI line
+    r')',
+    re.IGNORECASE,
+)
 
-
-# Tools whose raw Observation content is suppressed from the SSE output stream.
-# The tool card (tool_call / tool_input events) already shows name + path.
+# Tools whose file content is suppressed from the SSE output stream.
+# A compact tool card with path is shown instead.
 _SILENT_OBS_TOOLS = frozenset({
     "read_file",
     "list_project_structure",
@@ -54,67 +67,135 @@ _SILENT_OBS_TOOLS = frozenset({
 })
 
 
+def _should_skip_box(title: str) -> bool:
+    t = title.strip().lower()
+    return any(t == p or t.startswith(p + " ") or t.startswith(p + "(") for p in _BOX_SKIP_PREFIXES)
+
+
+# ── Native tool tracking (function-calling / non-ReAct style) ─────────────────
+_native_tool_args: dict[str, str] = {}      # tool_name → last raw args string
+_native_pending: list[dict] = []            # events queued inside _clean_rich_box
+
+_FILE_PATH_RE = re.compile(r"file_path['\"\s:]+([^'\"\}\n,]+)")
+
+
+def _extract_path(args: str) -> str:
+    """Pull a file path out of a raw Args string like {'file_path': 'D:/...'}."""
+    m = _FILE_PATH_RE.search(args)
+    return m.group(1).strip("'\"/ \\").replace("\\\\", "\\") if m else args[:200]
+
+
+# ── Rich box → clean text ──────────────────────────────────────────────────────
+# Box parsing state is MODULE-LEVEL so it persists across write() calls.
+# If a Rich panel is split across two write() calls (first call ends mid-box),
+# the state is preserved correctly for the second call.
+_box: dict = {
+    "in_skip":       False,   # currently inside a skip-listed box
+    "in_tool_start": False,   # currently inside a "Tool Execution Started" box
+    "last_title":    "",      # lowercase title of current box
+    "ts_info":       {"name": "", "args": ""},  # scratch for tool-start parsing
+}
+
+
 def _clean_rich_box(text: str) -> str:
     """Convert Rich panel box-drawing chars to clean text for SSE.
 
-    ╭──── Title ────╮  →  ──── Title ──── (or skipped if noisy)
-    │  content  │       →  content (or skipped if metadata/UUID)
-    ╰────────────╯      →  (always skipped)
+    Box parsing state persists across calls via the module-level _box dict,
+    so boxes split across write() calls are handled correctly.
+
+    Special cases:
+    • "Tool Execution Started" boxes → suppressed, tool name + args queued
+      as SSE events in _native_pending.
+    • Skip-listed boxes → suppressed entirely.
+    • Regular boxes → title kept as a plain separator line.
     """
+    global _native_pending
+
     out: list[str] = []
     prev_blank = False
-    last_title = ''
-    in_skip_box = False  # True while inside a box whose content we want to drop
 
     for raw in text.split('\n'):
         s = raw.strip()
 
-        # Top border: ╭──── Title ────╮
+        # ── Top border: ╭──── Title ────╮ ─────────────────────────────────
         if s.startswith('╭'):
             title = re.sub(r'[╭╮─]', '', s).strip()
-            last_title = title.lower()
-            if title and _should_skip_box(title):
-                in_skip_box = True
+            _box["last_title"] = title.lower()
+            _box["in_tool_start"] = _box["last_title"].startswith("tool execution started")
+
+            if _box["in_tool_start"]:
+                _box["in_skip"] = True
+                _box["ts_info"] = {"name": "", "args": ""}
+            elif title and _should_skip_box(title):
+                _box["in_skip"] = True
+                _box["in_tool_start"] = False
             else:
-                in_skip_box = False
+                _box["in_skip"] = False
+                _box["in_tool_start"] = False
                 if title:
                     out.append(f'──── {title} ────')
             prev_blank = False
             continue
 
-        # Bottom border: ╰──────╯ → skip, reset skip-box flag
+        # ── Bottom border: ╰──────╯ ───────────────────────────────────────
         if s.startswith('╰'):
-            in_skip_box = False
+            if _box["in_tool_start"] and _box["ts_info"]["name"]:
+                name = _box["ts_info"]["name"]
+                args = _box["ts_info"]["args"]
+                _native_tool_args[name] = args
+                _native_pending.append({"type": "tool_call",  "tool": name})
+                if args:
+                    _native_pending.append({
+                        "type": "tool_input", "tool": name,
+                        "input": _extract_path(args) if name in _SILENT_OBS_TOOLS else args[:400],
+                    })
+            _box["in_skip"] = False
+            _box["in_tool_start"] = False
             continue
 
-        # Content line: │  text  │ — skip entirely if inside a noisy box
+        # ── Content line: │  text  │ ──────────────────────────────────────
         if s.startswith('│'):
-            if in_skip_box:
-                continue
             content = s.lstrip('│').rstrip('│').strip()
             if not content:
-                continue  # blank box padding → discard
-            if content.lower() == last_title:
-                continue  # duplicate of the title we already emitted
+                continue
+            if _box["in_tool_start"]:
+                if content.startswith('Tool: '):
+                    _box["ts_info"]["name"] = content[6:].strip()
+                elif content.startswith('Args: '):
+                    _box["ts_info"]["args"] = content[6:].strip()
+                continue
+            if _box["in_skip"]:
+                continue
+            if content.lower() == _box["last_title"]:
+                continue
             if _BOX_UUID.match(content) or _BOX_META.match(content):
                 continue
             out.append(content)
             prev_blank = False
             continue
 
-        # Regular line
+        # ── Regular line ───────────────────────────────────────────────────
         if not s:
             if not prev_blank:
                 out.append('')
                 prev_blank = True
         else:
+            sl = s.lower()
+            if sl in _PLAIN_SKIP:
+                continue
+            # Check prefix-based noise patterns (e.g. "[Finalize] ...")
+            # Also suppress numbered variants: "Tool Execution Started (#1)"
+            if _PLAIN_SKIP_RE.match(s):
+                continue
+            if any(sl.startswith(p) for p in ("tool execution started", "tool execution completed")):
+                continue
             out.append(raw)
             prev_blank = False
 
     return '\n'.join(out)
 
 
-# ── Tool event detection ───────────────────────────────────────────────────────
+# ── ReAct tool event detection ─────────────────────────────────────────────────
 _TOOL_RE  = re.compile(r'^\s*Action:\s*(\S.*)', re.IGNORECASE)
 _INPUT_RE = re.compile(r'^\s*Action Input:\s*(.*)', re.IGNORECASE)
 _OBS_RE   = re.compile(r'^\s*Observation:\s*(.*)', re.IGNORECASE)
@@ -143,7 +224,6 @@ def _parse_tool_events(lines: list[str]) -> list[dict]:
                     })
                 ctx["in_obs"] = False
                 ctx["obs"] = []
-                # fall through — re-evaluate this line below
             else:
                 ctx["obs"].append(s)
                 continue
@@ -171,32 +251,74 @@ def _parse_tool_events(lines: list[str]) -> list[dict]:
     return events
 
 
+# ── Native tool result line (function-calling style) ──────────────────────────
+# Pattern: "Tool read_file executed with result: <content>"
+# Emitted as plain text by CrewAI's event bus (not via Rich boxes).
+_NATIVE_RESULT_RE = re.compile(
+    r'^Tool (\S+) executed with result:\s*(.*)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _handle_native_result(line: str) -> bool:
+    """Return True (and emit SSE) if line is a native tool result that should
+    be suppressed or replaced.  Called on each clean line before normal emit."""
+    m = _NATIVE_RESULT_RE.match(line.strip())
+    if not m:
+        return False
+    tool_name = m.group(1)
+    if tool_name not in _SILENT_OBS_TOOLS:
+        return False
+
+    # Emit compact indicator instead of content
+    path = _native_tool_args.get(tool_name, "")
+    display = _extract_path(path) if path else tool_name
+    sse_queue.put({"type": "tool_call",  "tool": tool_name})
+    sse_queue.put({"type": "tool_input", "tool": tool_name, "input": display})
+    return True  # caller must NOT emit the original line
+
+
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
+
+# ── stdout capture ─────────────────────────────────────────────────────────────
 
 class _TeeOutput:
     def __init__(self, original):
         self._orig = original
 
     def write(self, text: str):
-        # Check cancellation before doing anything
         if _cancel_requested.is_set():
             _cancel_requested.clear()
             raise KeyboardInterrupt("Pedido cancelado pelo utilizador")
 
         self._orig.write(text)
+
         clean = _clean_rich_box(strip_ansi(text))
+
+        # Flush events gathered inside _clean_rich_box (tool-start boxes)
+        global _native_pending
+        if _native_pending:
+            for ev in _native_pending:
+                sse_queue.put(ev)
+            _native_pending.clear()
+
         if not clean.strip():
             return
 
         lines = clean.splitlines()
         non_empty = [l for l in lines if l.strip()]
 
-        # Snapshot obs state BEFORE parsing (tells us if we were already in silent obs)
+        # Check for native tool result lines (function-calling path)
+        # If ANY line is a silent native result, suppress the whole write
+        for line in non_empty:
+            if _handle_native_result(line):
+                return  # content suppressed; tool card already emitted
+
+        # Snapshot ReAct obs state BEFORE parsing
         pre_silent = _tool_ctx["in_obs"] and _tool_ctx["tool"] in _SILENT_OBS_TOOLS
 
-        # Parse tool events and update _tool_ctx
         if non_empty:
             _output_buffer.extend(non_empty)
             while len(_output_buffer) > _BUFFER_SIZE:
@@ -204,15 +326,12 @@ class _TeeOutput:
             for event in _parse_tool_events(non_empty):
                 sse_queue.put(event)
 
-        # Snapshot obs state AFTER parsing (tells us if we just entered silent obs)
         post_silent = _tool_ctx["in_obs"] and _tool_ctx["tool"] in _SILENT_OBS_TOOLS
 
         if pre_silent:
-            # We were already inside a silent observation → suppress the entire write
             return
 
         if post_silent:
-            # We just entered a silent observation → emit only the lines BEFORE "Observation:"
             pre_obs: list[str] = []
             for line in lines:
                 if _OBS_RE.match(line.strip()):
@@ -222,7 +341,6 @@ class _TeeOutput:
                 sse_queue.put({"type": "output", "text": '\n'.join(pre_obs)})
             return
 
-        # Normal case — emit everything
         sse_queue.put({"type": "output", "text": clean})
 
     def flush(self):
@@ -234,6 +352,8 @@ class _TeeOutput:
     def isatty(self):
         return self._orig.isatty()
 
+
+# ── input() intercept ─────────────────────────────────────────────────────────
 
 def _is_crewai_human_input(prompt: str) -> bool:
     return not prompt.strip()
@@ -258,6 +378,8 @@ def _dashboard_input(prompt: str = "") -> str:
     sse_queue.put({"type": "output", "text": f"{clean_prompt}{response}"})
     return response
 
+
+# ── Enable / disable ──────────────────────────────────────────────────────────
 
 def enable():
     global _dashboard_active

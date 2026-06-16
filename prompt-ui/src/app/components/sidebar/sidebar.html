@@ -9,7 +9,10 @@
   <h3>Histórico</h3>
   <div class="history">
     @for (r of session().requests; track r.num) {
-      <div class="hist-item" [class.active]="r.status === '🔄'">
+      <div class="hist-item"
+           [class.active]="r.status === '🔄'"
+           [class.selected]="selectedRequest()?.num === r.num"
+           (click)="select(r)">
         <span class="num">#{{ r.num }}</span>
         <span class="req" [title]="r.request">{{ r.request }}</span>
         <span class="st">{{ r.status }}</span>
@@ -17,4 +20,24 @@
       </div>
     }
   </div>
+  @if (selectedRequest()) {
+    <div class="detail-panel">
+      <div class="detail-header">
+        <span class="detail-req" [title]="selectedRequest()!.request">#{{ selectedRequest()!.num }} {{ selectedRequest()!.request }}</span>
+        <button class="detail-btn" (click)="copyOutput()" title="Copiar output">
+          <span class="icon sm">content_copy</span>
+        </button>
+        <button class="detail-btn" (click)="selectedNum.set(null)" title="Fechar">
+          <span class="icon sm">close</span>
+        </button>
+      </div>
+      <div class="detail-content">
+        @if (selectedRequest()!.output) {
+          <pre>{{ selectedRequest()!.output }}</pre>
+        } @else {
+          <span class="no-output">Output não disponível para este pedido</span>
+        }
+      </div>
+    </div>
+  }
 </div>

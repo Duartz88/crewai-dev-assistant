@@ -3,6 +3,7 @@ export interface SessionRequest {
   request: string;
   status: string;
   elapsed: number | null;
+  output?: string;
 }
 
 export interface Session {

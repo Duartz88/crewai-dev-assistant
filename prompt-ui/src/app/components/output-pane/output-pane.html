@@ -1,4 +1,4 @@
-<div class="out" #out (scroll)="onScroll(out)">
+<div class="out" #out (scroll)="onScroll(out)" (wheel)="onWheel($event)">
   @if (lines().length === 0) {
     <span class="empty">Aguardando primeiro pedido...</span>
   }
@@ -29,12 +29,13 @@
     </button>
   }
   @if (contextFrom()) {
-    <span class="ctx-badge">
-      <span class="icon sm">link</span> {{ contextLabel() }}
-    </span>
-    <button class="btn-copy ctx-clear" (click)="clearCtx.emit()" title="Limpar contexto">
-      <span class="icon sm">close</span>
-    </button>
+    <div class="ctx-group">
+      <span class="icon sm">link</span>
+      <span class="ctx-label">{{ contextLabel() }}</span>
+      <button class="ctx-clear" (click)="clearCtx.emit()" title="Limpar contexto">
+        <span class="icon sm">close</span>
+      </button>
+    </div>
   }
 </div>
 <div class="input-bar">

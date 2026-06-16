@@ -148,15 +148,22 @@
     &:disabled { opacity: .4; cursor: default; }
   }
 
-  .ctx-badge {
+  .ctx-group {
     margin-left: auto; display: flex; align-items: center; gap: 4px;
     font-size: 11px; color: var(--accent2); font-style: italic;
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 12px; padding: 3px 4px 3px 8px;
   }
 
+  .ctx-label { white-space: nowrap; }
+
   .ctx-clear {
-    padding: 2px 5px; margin-left: 0;
-    border-color: transparent;
-    &:hover { border-color: var(--red); color: var(--red); }
+    background: transparent; border: none; cursor: pointer;
+    color: var(--dim); padding: 2px 3px; border-radius: 8px;
+    display: flex; align-items: center; line-height: 1;
+    font-family: inherit;
+    transition: color 0.12s, background 0.12s;
+    &:hover { color: var(--red); background: rgba(224,108,117,.12); }
   }
 }
 

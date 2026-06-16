@@ -12,17 +12,17 @@ from dev_studio.tools.compare_files_tool import CompareFilesTool
 from dev_studio.tools.test_runner_tool import TestRunnerTool
 from dev_studio.tools.git_log_tool import GitLogTool
 from dev_studio.tools.project_memory_tool import ProjectMemoryReadTool, ProjectMemoryWriteTool
+from dev_studio.tools.patch_file_tool import PatchFileTool
+from dev_studio.tools.endpoint_verify_tool import EndpointVerifyTool
 
-_BASE_URL = "https://duartz-pc.tail63c43f.ts.net/v1"
-_API_KEY  = "sk-lm-TTrbPXEj:VO2I1WD72FJSCDQSAWQ0"
+_BASE_URL = os.environ.get("LM_BASE_URL", "http://localhost:1234/v1")
+_API_KEY  = os.environ.get("LM_API_KEY",  "sk-lm-TTrbPXEj:VO2I1WD72FJSCDQSAWQ0")
 
-# Switch between models here — Gemma for dev/review, Claude for architecture
-_MODEL_ARCHITECT = "gemma-4-26b-a4b"
-_MODEL_DEVELOPER = "gemma-4-26b-a4b"
-_MODEL_REVIEWER  = "gemma-4-26b-a4b"
+# Switch between models here
+_MODEL_ARCHITECT = "Qwen2.5-Coder-32B"
+_MODEL_DEVELOPER = "Qwen2.5-Coder-32B"
+_MODEL_REVIEWER  = "Qwen2.5-Coder-32B"
 
-# Gemma works better with slightly higher temperatures than Claude
-# (too low → repetitive/stuck loops; too high → hallucinations)
 llm_architect = LLM(model=_MODEL_ARCHITECT, base_url=_BASE_URL, api_key=_API_KEY, temperature=0.4)
 llm_developer = LLM(model=_MODEL_DEVELOPER, base_url=_BASE_URL, api_key=_API_KEY, temperature=0.2)
 llm_reviewer  = LLM(model=_MODEL_REVIEWER,  base_url=_BASE_URL, api_key=_API_KEY, temperature=0.3)
@@ -60,8 +60,10 @@ class DevStudioCrew:
 
     def __init__(self, project_path: str = ""):
         self._rules = _load_rules(project_path)
-        self._file_read  = ProjectFileReadTool(project_path=project_path)
-        self._file_write = DiffFileWriterTool(project_path=project_path)
+        self._file_read    = ProjectFileReadTool(project_path=project_path)
+        self._file_write   = DiffFileWriterTool(project_path=project_path)
+        self._file_patch   = PatchFileTool(project_path=project_path)
+        self._ep_verify    = EndpointVerifyTool(project_path=project_path)
 
     def _cfg(self, key: str) -> dict:
         cfg = dict(self.agents_config[key])
@@ -77,9 +79,10 @@ class DevStudioCrew:
             tools=[
                 dir_tool, self._file_read, git_log, mem_read,
                 grep_tool, compare_tool,          # cross-project analysis
+                self._ep_verify,                  # verify API endpoints before plan
             ],
             verbose=True,
-            max_iter=10,
+            max_iter=12,
         )
 
     @agent
@@ -88,8 +91,11 @@ class DevStudioCrew:
             config=self._cfg("developer"),
             llm=llm_developer,
             tools=[
-                dir_tool, self._file_read, self._file_write,
-                py_validator, ts_validator, ps_validator,   # validate before write
+                dir_tool, self._file_read,
+                self._file_patch,   # PREFERÊNCIA: modifica ficheiros existentes com patch_file
+                self._file_write,   # apenas para criar ficheiros novos
+                py_validator, ts_validator, ps_validator,
+                self._ep_verify,    # verificar endpoints antes de os usar
                 mem_write,
             ],
             verbose=True,

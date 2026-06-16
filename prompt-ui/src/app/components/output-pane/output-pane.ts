@@ -37,10 +37,14 @@ export class OutputPane implements AfterViewChecked {
 
   request = signal('');
   private autoScroll = true;
+  private _prevLineCount = 0;
 
   @ViewChild('out') outEl!: ElementRef<HTMLDivElement>;
 
   ngAfterViewChecked() {
+    const count = this.lines().length;
+    if (count === this._prevLineCount) return;
+    this._prevLineCount = count;
     if (this.autoScroll) {
       const el = this.outEl?.nativeElement;
       if (el) el.scrollTop = el.scrollHeight;
@@ -49,6 +53,10 @@ export class OutputPane implements AfterViewChecked {
 
   onScroll(el: HTMLDivElement) {
     this.autoScroll = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  }
+
+  onWheel(e: WheelEvent) {
+    if (e.deltaY < 0) this.autoScroll = false;
   }
 
   onEnter(e: Event) {

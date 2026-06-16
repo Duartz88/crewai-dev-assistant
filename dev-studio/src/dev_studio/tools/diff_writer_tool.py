@@ -1,7 +1,15 @@
 import difflib
 import os
+import re
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+
+
+def _python_defs(content: str) -> set[str]:
+    """Return all top-level def/class names."""
+    names = re.findall(r'^(?:async\s+)?def\s+(\w+)', content, re.MULTILINE)
+    names += re.findall(r'^class\s+(\w+)', content, re.MULTILINE)
+    return set(names)
 
 
 class DiffWriterInput(BaseModel):
@@ -40,11 +48,40 @@ class DiffFileWriterTool(BaseTool):
 
         filename = resolved
 
-        # ── Show diff / preview ────────────────────────────────────────────
-        print("\n" + "=" * 60)
+        # ── Safety checks for existing files ──────────────────────────────
+        old = None
         if os.path.exists(filename):
             with open(filename, encoding="utf-8") as f:
                 old = f.read()
+
+            old_lines = old.splitlines()
+            new_lines = content.splitlines()
+
+            # Block if new content is suspiciously shorter (>25% fewer lines)
+            if old_lines and len(new_lines) < len(old_lines) * 0.75:
+                removed = len(old_lines) - len(new_lines)
+                pct = int(100 * removed / len(old_lines))
+                return (
+                    f"🛑 BLOQUEADO — o novo conteúdo tem {len(new_lines)} linhas mas "
+                    f"o original tem {len(old_lines)} ({pct}% de redução, {removed} linhas a menos).\n"
+                    f"Isto é muito suspeito. Volta a ler o ficheiro com read_file e certifica-te "
+                    f"que TODAS as funções/endpoints existentes estão incluídos no novo conteúdo."
+                )
+
+            # Block if Python defs/classes went missing
+            if filename.endswith(".py"):
+                missing = _python_defs(old) - _python_defs(content)
+                if missing:
+                    return (
+                        f"🛑 BLOQUEADO — as seguintes funções/classes do original desapareceram "
+                        f"do novo conteúdo:\n"
+                        + "\n".join(f"  ✗ {d}" for d in sorted(missing))
+                        + "\n\nVerifica o novo conteúdo e inclui TODAS as funções existentes."
+                    )
+
+        # ── Show diff / preview ────────────────────────────────────────────
+        print("\n" + "=" * 60)
+        if old is not None:
             diff = list(difflib.unified_diff(
                 old.splitlines(keepends=True),
                 content.splitlines(keepends=True),

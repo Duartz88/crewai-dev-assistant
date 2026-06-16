@@ -55,6 +55,9 @@ export class Shell implements OnInit, OnDestroy {
   promptData = signal<{ prompt: string; context: string }>({ prompt: '', context: '' });
   fixFeedback = '';
 
+  // tracks where in lines[] the current request's output begins
+  private _reqStartLine = 0;
+
   // ── Markdown streaming state ────────────────────────────────────────────────
   private _md = {
     state: 'normal' as 'normal' | 'code' | 'antes' | 'depois',
@@ -161,6 +164,7 @@ export class Shell implements OnInit, OnDestroy {
         break;
       case 'request_start': {
         this.running.set(true);
+        this._reqStartLine = this.lines().length;
         this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
         const agentLabel = (msg['agent_label'] as string) || '';
         this.addLine(`\n${'─'.repeat(60)}\n${agentLabel} — Pedido #${msg['num']}: ${msg['request']}`, 'head');
@@ -174,7 +178,19 @@ export class Shell implements OnInit, OnDestroy {
         const label = done ? 'Concluído' : cancelled ? 'Cancelado' : 'Falhou';
         const cls = done ? 'ok' : cancelled ? 'warn' : 'err';
         this.addLine(`\n${label} em ${msg['elapsed']}s`, cls);
-        this.session.update(s => ({ ...s, requests: msg['requests'] as SessionRequest[] }));
+        // Build text output from lines rendered during this request
+        const capturedOutput = this.lines()
+          .slice(this._reqStartLine)
+          .map(l => l.text || '')
+          .filter(t => t.trim())
+          .join('\n');
+        // Prefer backend output (raw agent text); fall back to frontend capture
+        const requests = (msg['requests'] as SessionRequest[]).map(r =>
+          r.num === (msg['num'] as number)
+            ? { ...r, output: r.output ?? (capturedOutput || undefined) }
+            : r
+        );
+        this.session.update(s => ({ ...s, requests }));
         break;
       }
       case 'context_updated':
