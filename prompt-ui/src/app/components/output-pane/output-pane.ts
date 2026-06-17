@@ -3,19 +3,31 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { OutputLine } from '../shell/shell';
 
-type AgentId = 'architect' | 'developer' | 'reviewer' | 'dev+review';
+type AgentId = 'architect' | 'developer' | 'reviewer' | 'dev+review' | 'arch+review' | 'full-flow';
 
 const AGENTS: { id: AgentId; label: string; icon: string }[] = [
-  { id: 'architect',  label: 'Arquitecto', icon: 'architecture' },
-  { id: 'developer',  label: 'Developer',  icon: 'code'         },
-  { id: 'reviewer',   label: 'Reviewer',   icon: 'fact_check'   },
-  { id: 'dev+review', label: 'Dev+Review', icon: 'merge'        },
+  { id: 'full-flow',   label: 'Fluxo Completo', icon: 'auto_mode'     },
+  { id: 'architect',   label: 'Arquitecto',     icon: 'architecture'  },
+  { id: 'developer',   label: 'Developer',      icon: 'code'          },
+  { id: 'reviewer',    label: 'Reviewer',       icon: 'fact_check'    },
+  { id: 'dev+review',  label: 'Dev+Review',     icon: 'merge'         },
+  { id: 'arch+review', label: 'Arch+Review',    icon: 'manage_search' },
 ];
 
 const AGENT_LABELS: Record<string, string> = {
+  'full-flow': 'Fluxo Completo',
   architect: 'Arquitecto', developer: 'Developer',
-  reviewer: 'Reviewer', 'dev+review': 'Dev+Review',
+  reviewer: 'Reviewer', 'dev+review': 'Dev+Review', 'arch+review': 'Arch+Review',
 };
+
+// Classes that represent discrete events on the timeline and get a dot.
+// Regular agent output text (no cls or unrecognised cls) gets no dot.
+const DOT_CLASSES = new Set([
+  'head', 'section-head', 'sub-head',
+  'agent', 'tool-card-line',
+  'ok', 'err', 'warn',
+  'scanning', 'scanning-done',
+]);
 
 @Component({
   selector: 'app-output-pane',
@@ -35,7 +47,8 @@ export class OutputPane implements AfterViewChecked {
 
   readonly agents = AGENTS;
 
-  request = signal('');
+  request     = signal('');
+  lastRequest = signal('');
   private autoScroll = true;
   private _prevLineCount = 0;
 
@@ -68,8 +81,18 @@ export class OutputPane implements AfterViewChecked {
   send() {
     const req = this.request().trim();
     if (!req || this.running()) return;
+    this.lastRequest.set(req);
     this.submit.emit(req);
     this.request.set('');
+  }
+
+  showDot(line: OutputLine): boolean {
+    return DOT_CLASSES.has(line.cls ?? '');
+  }
+
+  repeatLast() {
+    const last = this.lastRequest();
+    if (last) this.request.set(last);
   }
 
   contextLabel(): string {

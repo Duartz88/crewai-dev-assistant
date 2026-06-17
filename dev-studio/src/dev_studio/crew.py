@@ -1,4 +1,5 @@
 import os
+from typing import Any
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from dev_studio.tools.project_file_read_tool import ProjectFileReadTool
@@ -14,18 +15,24 @@ from dev_studio.tools.git_log_tool import GitLogTool
 from dev_studio.tools.project_memory_tool import ProjectMemoryReadTool, ProjectMemoryWriteTool
 from dev_studio.tools.patch_file_tool import PatchFileTool
 from dev_studio.tools.endpoint_verify_tool import EndpointVerifyTool
+from dev_studio.tools.project_scanner_tool import ProjectScannerTool
+from dev_studio.tools.project_state_tool import ProjectStateReadTool
+from dev_studio.models import ArchitecturePlan, ImplementationResult, ReviewResult
 
-_BASE_URL = os.environ.get("LM_BASE_URL", "http://localhost:1234/v1")
-_API_KEY  = os.environ.get("LM_API_KEY",  "sk-lm-TTrbPXEj:VO2I1WD72FJSCDQSAWQ0")
+from dev_studio.utils.settings import load_settings as _load_settings  # noqa: E402
 
-# Switch between models here
-_MODEL_ARCHITECT = "Qwen2.5-Coder-32B"
-_MODEL_DEVELOPER = "Qwen2.5-Coder-32B"
-_MODEL_REVIEWER  = "Qwen2.5-Coder-32B"
 
-llm_architect = LLM(model=_MODEL_ARCHITECT, base_url=_BASE_URL, api_key=_API_KEY, temperature=0.4)
-llm_developer = LLM(model=_MODEL_DEVELOPER, base_url=_BASE_URL, api_key=_API_KEY, temperature=0.2)
-llm_reviewer  = LLM(model=_MODEL_REVIEWER,  base_url=_BASE_URL, api_key=_API_KEY, temperature=0.3)
+def _build_llms() -> tuple:
+    """Build LLM instances from current settings (re-read on every crew instantiation)."""
+    s = _load_settings()
+    url   = s["lm_base_url"]
+    key   = s["lm_api_key"]
+    model = s["model_name"] or "default"
+    return (
+        LLM(model=model, base_url=url, api_key=key, temperature=0.4,  extra_body={"enable_thinking": True}),   # type: ignore[call-overload]
+        LLM(model=model, base_url=url, api_key=key, temperature=0.15, extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
+        LLM(model=model, base_url=url, api_key=key, temperature=0.35, extra_body={"enable_thinking": True}),   # type: ignore[call-overload]
+    )
 
 dir_tool     = SmartDirectoryTool()
 py_validator = PythonSyntaxValidatorTool()
@@ -55,18 +62,21 @@ def _load_rules(project_path: str) -> str:
 
 @CrewBase
 class DevStudioCrew:
-    agents_config = "config/agents.yaml"
-    tasks_config  = "config/tasks.yaml"
+    agents_config: Any = "config/agents.yaml"
+    tasks_config:  Any = "config/tasks.yaml"
 
     def __init__(self, project_path: str = ""):
-        self._rules = _load_rules(project_path)
+        self._rules        = _load_rules(project_path)
+        self._llm_a, self._llm_d, self._llm_r = _build_llms()
         self._file_read    = ProjectFileReadTool(project_path=project_path)
         self._file_write   = DiffFileWriterTool(project_path=project_path)
         self._file_patch   = PatchFileTool(project_path=project_path)
         self._ep_verify    = EndpointVerifyTool(project_path=project_path)
+        self._scanner      = ProjectScannerTool(project_path=project_path)
+        self._state_read   = ProjectStateReadTool(project_path=project_path)
 
     def _cfg(self, key: str) -> dict:
-        cfg = dict(self.agents_config[key])
+        cfg: dict[str, Any] = dict(self.agents_config[key])  # type: ignore[call-overload]
         if self._rules:
             cfg["backstory"] = cfg["backstory"] + "\n\n" + self._rules
         return cfg
@@ -75,21 +85,24 @@ class DevStudioCrew:
     def architect(self) -> Agent:
         return Agent(
             config=self._cfg("architect"),
-            llm=llm_architect,
+            llm=self._llm_a,
             tools=[
+                self._state_read,                 # structured index: routes/services/models/components
+                self._scanner,                    # re-scan project map on demand
                 dir_tool, self._file_read, git_log, mem_read,
                 grep_tool, compare_tool,          # cross-project analysis
                 self._ep_verify,                  # verify API endpoints before plan
+                ps_validator,                     # syntax check (PS1/PSM1)
             ],
             verbose=True,
-            max_iter=12,
+            max_iter=15,
         )
 
     @agent
     def developer(self) -> Agent:
         return Agent(
             config=self._cfg("developer"),
-            llm=llm_developer,
+            llm=self._llm_d,
             tools=[
                 dir_tool, self._file_read,
                 self._file_patch,   # PREFERÊNCIA: modifica ficheiros existentes com patch_file
@@ -99,15 +112,16 @@ class DevStudioCrew:
                 mem_write,
             ],
             verbose=True,
-            max_iter=12,
+            max_iter=25,
         )
 
     @agent
     def reviewer(self) -> Agent:
         return Agent(
             config=self._cfg("reviewer"),
-            llm=llm_reviewer,
+            llm=self._llm_r,
             tools=[
+                self._state_read,                           # verify routes/services exist
                 dir_tool, self._file_read, test_runner, mem_write,
                 grep_tool, compare_tool, ps_validator,      # deep review
             ],
@@ -117,19 +131,31 @@ class DevStudioCrew:
 
     @task
     def design_task(self) -> Task:
-        return Task(config=self.tasks_config["design_task"])
+        return Task(
+            config=self.tasks_config["design_task"],      # type: ignore[call-arg]
+            output_pydantic=ArchitecturePlan,
+        )
 
     @task
     def implement_task(self) -> Task:
-        return Task(config=self.tasks_config["implement_task"])
+        return Task(
+            config=self.tasks_config["implement_task"],   # type: ignore[call-arg]
+            output_pydantic=ImplementationResult,
+        )
 
     @task
     def fix_task(self) -> Task:
-        return Task(config=self.tasks_config["fix_task"])
+        return Task(
+            config=self.tasks_config["fix_task"],         # type: ignore[call-arg]
+            output_pydantic=ImplementationResult,
+        )
 
     @task
     def review_task(self) -> Task:
-        return Task(config=self.tasks_config["review_task"])
+        return Task(
+            config=self.tasks_config["review_task"],      # type: ignore[call-arg]
+            output_pydantic=ReviewResult,
+        )
 
     @crew
     def crew(self) -> Crew:
@@ -138,7 +164,6 @@ class DevStudioCrew:
             tasks=[self.design_task()],
             process=Process.sequential,
             verbose=True,
-            max_rpm=10,
         )
 
     def implement_crew(self) -> Crew:
@@ -147,7 +172,6 @@ class DevStudioCrew:
             tasks=[self.implement_task()],
             process=Process.sequential,
             verbose=True,
-            max_rpm=10,
         )
 
     def review_crew(self) -> Crew:
@@ -156,7 +180,16 @@ class DevStudioCrew:
             tasks=[self.review_task()],
             process=Process.sequential,
             verbose=True,
-            max_rpm=10,
+        )
+
+    def fix_only_crew(self) -> Crew:
+        """Developer-only fix crew — applies reviewer issues via fix_task.
+        Reviewer runs separately so we can capture both outputs."""
+        return Crew(
+            agents=[self.developer()],
+            tasks=[self.fix_task()],
+            process=Process.sequential,
+            verbose=True,
         )
 
     def fix_crew(self) -> Crew:
@@ -165,7 +198,6 @@ class DevStudioCrew:
             tasks=[self.fix_task(), self.review_task()],
             process=Process.sequential,
             verbose=True,
-            max_rpm=10,
         )
 
     def dev_review_crew(self) -> Crew:
@@ -175,5 +207,36 @@ class DevStudioCrew:
             tasks=[self.implement_task(), self.review_task()],
             process=Process.sequential,
             verbose=True,
-            max_rpm=10,
+        )
+
+    def arch_review_crew(self) -> Crew:
+        """Architect + Reviewer in sequence with reduced max_iter to avoid context overflow."""
+        arch = Agent(
+            config=self._cfg("architect"),
+            llm=self._llm_a,
+            tools=[
+                self._scanner,
+                dir_tool, self._file_read, git_log, mem_read,
+                grep_tool, compare_tool,
+                self._ep_verify,
+                ps_validator,
+            ],
+            verbose=True,
+            max_iter=10,
+        )
+        rev = Agent(
+            config=self._cfg("reviewer"),
+            llm=self._llm_r,
+            tools=[
+                dir_tool, self._file_read,
+                grep_tool, compare_tool, ps_validator, mem_write,
+            ],
+            verbose=True,
+            max_iter=4,
+        )
+        return Crew(
+            agents=[arch, rev],
+            tasks=[self.design_task(), self.review_task()],
+            process=Process.sequential,
+            verbose=True,
         )

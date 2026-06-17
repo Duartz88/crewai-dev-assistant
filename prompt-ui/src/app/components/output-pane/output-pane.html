@@ -3,11 +3,18 @@
     <span class="empty">Aguardando primeiro pedido...</span>
   }
   @for (line of lines(); track $index) {
-    @if (line.html) {
-      <div class="line" [class]="line.cls" [innerHTML]="line.html"></div>
-    } @else {
-      <span class="line" [class]="line.cls">{{ line.text }}</span>
-    }
+    <div class="thread-row" [attr.data-cls]="line.cls">
+      <div class="thread-col">
+        @if (showDot(line)) {
+          <span class="thread-dot"></span>
+        }
+      </div>
+      @if (line.html) {
+        <div class="line" [class]="line.cls" [innerHTML]="line.html"></div>
+      } @else {
+        <span class="line" [class]="line.cls">{{ line.text }}</span>
+      }
+    </div>
   }
 </div>
 <div class="copy-bar">
@@ -45,7 +52,15 @@
             [disabled]="running()"
             (keydown.enter)="onEnter($event)"
             rows="3"></textarea>
-  <button [disabled]="running()" (click)="send()">
-    <span class="icon sm">send</span>
-  </button>
+  <div class="send-col">
+    <button class="btn-repeat"
+            [disabled]="!lastRequest() || running()"
+            (click)="repeatLast()"
+            title="Repetir último prompt">
+      <span class="icon sm">replay</span>
+    </button>
+    <button [disabled]="running()" (click)="send()">
+      <span class="icon sm">send</span>
+    </button>
+  </div>
 </div>

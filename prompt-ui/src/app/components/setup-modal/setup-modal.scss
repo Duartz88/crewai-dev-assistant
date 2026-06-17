@@ -1,0 +1,12 @@
+.input-error {
+  border-color: var(--red) !important;
+  &:focus { border-color: var(--red) !important; }
+}
+
+.error-msg {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--red); font-size: 12px;
+  margin-top: 6px; padding: 6px 10px;
+  background: rgba(224, 108, 117, .10);
+  border-radius: 5px; border: 1px solid rgba(224, 108, 117, .25);
+}

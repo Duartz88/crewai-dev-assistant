@@ -2,19 +2,21 @@ import { Component, OnInit, OnDestroy, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SseService } from '../../services/sse';
 import { ApiService } from '../../services/api';
-import { Session, SessionRequest, SseMessage } from '../../models';
+import { Session, SessionRequest, SseMessage, ArchitecturePlanData } from '../../models';
 import { SetupModal } from '../setup-modal/setup-modal';
 import { PromptModal } from '../prompt-modal/prompt-modal';
 import { CommitModal } from '../commit-modal/commit-modal';
 import { BranchModal } from '../branch-modal/branch-modal';
 import { OutputPane } from '../output-pane/output-pane';
 import { Sidebar } from '../sidebar/sidebar';
+import { PlanReviewModal } from '../plan-review-modal/plan-review-modal';
+import { SettingsModal } from '../settings-modal/settings-modal';
 
 export interface OutputLine { text: string; cls: string; html?: string; }
 
 @Component({
   selector: 'app-shell',
-  imports: [CommonModule, SetupModal, PromptModal, CommitModal, BranchModal, OutputPane, Sidebar],
+  imports: [CommonModule, SetupModal, PromptModal, CommitModal, BranchModal, OutputPane, Sidebar, PlanReviewModal, SettingsModal],
   templateUrl: './shell.html',
   styleUrl: './shell.scss',
 })
@@ -25,8 +27,17 @@ export class Shell implements OnInit, OnDestroy {
   lmModel = signal<string | null>(null);
   lines = signal<OutputLine[]>([]);
   sidebarWidth = signal(260);
-  selectedAgent = signal<string>('architect');
+  selectedAgent = signal<string>('full-flow');
   contextFrom = signal<string | null>(null);
+  elapsedSec = signal(0);
+  elapsedLabel = computed(() => {
+    const s = this.elapsedSec();
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60), sec = s % 60;
+    if (s < 3600) return `${m}m ${sec}s`;
+    return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+  });
+  languages = signal<string[]>([]);
 
   // ── Sidebar resize ──────────────────────────────────────────────────────────
   private _resizing = false;
@@ -47,16 +58,29 @@ export class Shell implements OnInit, OnDestroy {
     e.preventDefault();
   }
 
-  showSetup  = signal(true);
-  showPrompt = signal(false);
-  showCommit = signal(false);
-  showBranch = signal(false);
+  showSetup       = signal(true);
+  setupError      = signal('');
+  showPrompt      = signal(false);
+  showCommit      = signal(false);
+  showBranch      = signal(false);
+  showPlanReview  = signal(false);
+  showSettings    = signal(false);
+  planData        = signal<ArchitecturePlanData | null>(null);
+  planCountdown   = signal(600);
+  showConfirmNewSession  = signal(false);
+  showConfirmRollback    = signal(false);
+  lastStats = signal<Record<string, { count: number; total_secs: number }> | null>(null);
 
   promptData = signal<{ prompt: string; context: string }>({ prompt: '', context: '' });
   fixFeedback = '';
 
   // tracks where in lines[] the current request's output begins
   private _reqStartLine = 0;
+  private _runTimer: ReturnType<typeof setInterval> | null = null;
+  private _pendingToolName: string | null = null;
+  private _pendingToolN = 0;         // sequential number carried from tool_call event
+  private _lastToolCardIdx = -1;     // index in lines[] of the most recent tool card
+  private _scanningLineIdx  = -1;    // index of the current scanning status line
 
   // ── Markdown streaming state ────────────────────────────────────────────────
   private _md = {
@@ -76,34 +100,44 @@ export class Shell implements OnInit, OnDestroy {
     return `<div class="md-code">${label}<pre><code>${this._esc(text)}</code></pre></div>`;
   }
 
-  private _renderDiff(antes: { lang: string; text: string }, depois: { lang: string; text: string }): string {
-    const lang = antes.lang || depois.lang;
+  private _renderDiff(_antes: { lang: string; text: string }, depois: { lang: string; text: string }): string {
+    const lang = _antes.lang || depois.lang;
     const label = lang && lang !== 'text' ? `<span class="code-lang">${lang}</span>` : '';
-    return `<div class="md-diff">
-      <div class="diff-pane diff-antes">
-        <div class="diff-label">ANTES${label}</div>
-        <pre><code>${this._esc(antes.text)}</code></pre>
-      </div>
-      <div class="diff-pane diff-depois">
-        <div class="diff-label">DEPOIS${label}</div>
-        <pre><code>${this._esc(depois.text)}</code></pre>
-      </div>
-    </div>`;
+    return `<div class="md-code md-resultado">${label}<pre><code>${this._esc(depois.text)}</code></pre></div>`;
   }
 
   private _toolIcon(tool: string): string {
     const icons: Record<string, string> = {
       read_file: 'draft', list_project_structure: 'folder_open',
-      write_file: 'edit', diff_write_file: 'edit',
+      write_file: 'edit', diff_write_file: 'edit', patch_file: 'edit',
       git_log: 'history', read_project_memory: 'memory',
-      write_project_memory: 'memory', validate_python_syntax: 'check_circle',
-      validate_typescript: 'check_circle', run_tests: 'play_circle',
+      write_project_memory: 'memory',
+      validate_python_syntax: 'check_circle', validate_typescript: 'check_circle',
+      validate_powershell: 'check_circle', run_tests: 'play_circle',
+      compare_files: 'difference', grep_in_files: 'search', grep_in_project: 'search',
+      mark_endpoint_verified: 'verified',
+      read_project_state: 'hub',
     };
     return icons[tool] || 'build';
   }
 
   private _addHtml(html: string, cls = '') {
     this.lines.update(ls => [...ls, { text: '', cls, html }]);
+  }
+
+  private _flushPendingTool() {
+    if (!this._pendingToolName) return;
+    const tool = this._pendingToolName;
+    const n    = this._pendingToolN;
+    this._pendingToolName = null;
+    this._pendingToolN = 0;
+    this._addHtml(
+      `<div class="tool-card">
+        <span class="icon sm">${this._toolIcon(tool)}</span>
+        <span class="tool-name">${this._esc(tool)}</span>
+        <span class="tool-dur"></span>
+      </div>`, 'tool-card-line');
+    this._lastToolCardIdx = this.lines().length - 1;
   }
 
   projectName = computed(() => {
@@ -121,6 +155,7 @@ export class Shell implements OnInit, OnDestroy {
         this.showSetup.set(false);
         this.addLine(`Sessão retomada: ${data.session.project_path}`, 'ok');
         if (data.session.branch) this.addLine(`Branch: ${data.session.branch}`, 'dim');
+        if ((data as any).languages?.length) this.languages.set((data as any).languages);
       }
     });
 
@@ -135,6 +170,7 @@ export class Shell implements OnInit, OnDestroy {
     document.removeEventListener('mousemove', this._onResizeMove);
     document.removeEventListener('mouseup', this._onResizeUp);
     if (this._lmPollTimer) clearInterval(this._lmPollTimer);
+    if (this._runTimer) clearInterval(this._runTimer);
   }
 
   private _lmPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -149,44 +185,57 @@ export class Shell implements OnInit, OnDestroy {
   }
 
   private handle(msg: SseMessage) {
-    switch (msg['type']) {
+    switch (msg.type) {
       case 'session_state': {
-        const s = msg['session'] as Session;
-        if (s?.project_path) { this.session.set(s); this.showSetup.set(false); }
+        this._flushPendingTool();
+        if (msg.session?.project_path) { this.session.set(msg.session); this.showSetup.set(false); }
         break;
       }
       case 'session_start':
-        this.session.update(s => ({ ...s, project_path: msg['project'] as string, branch: msg['branch'] as string }));
-        this.addLine(`\nSessão iniciada — branch: ${msg['branch']}`, 'head');
+        this._flushPendingTool();
+        this.session.update(s => ({
+          ...s,
+          project_path: msg.project,
+          branch: msg.branch,
+          requests: msg.requests ?? s.requests,
+        }));
+        if (msg.languages?.length) this.languages.set(msg.languages);
+        this.addLine(`\nSessão iniciada — branch: ${msg.branch}`, 'head');
         break;
       case 'output':
-        this.appendOutput(msg['text'] as string);
+        this._flushPendingTool();
+        this.appendOutput(msg.text);
         break;
       case 'request_start': {
+        this._flushPendingTool();
         this.running.set(true);
+        this.elapsedSec.set(0);
+        if (this._runTimer) clearInterval(this._runTimer);
+        this._runTimer = setInterval(() => this.elapsedSec.update(s => s + 1), 1000);
         this._reqStartLine = this.lines().length;
         this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
-        const agentLabel = (msg['agent_label'] as string) || '';
-        this.addLine(`\n${'─'.repeat(60)}\n${agentLabel} — Pedido #${msg['num']}: ${msg['request']}`, 'head');
+        this.addLine(`\n${'─'.repeat(60)}\n${msg.agent_label} — Pedido #${msg.num}: ${msg.request}`, 'head');
         break;
       }
       case 'request_done': {
+        this._flushPendingTool();
+        if (this._runTimer) { clearInterval(this._runTimer); this._runTimer = null; }
         this.running.set(false);
-        const status = msg['status'] as string;
-        const done = status === 'done';
-        const cancelled = status === 'cancelled';
+        // Always reset markdown state on request end — prevents a half-open code
+        // block from bleeding into the next request's output.
+        this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
+        const done      = msg.status === 'done';
+        const cancelled = msg.status === 'cancelled';
         const label = done ? 'Concluído' : cancelled ? 'Cancelado' : 'Falhou';
-        const cls = done ? 'ok' : cancelled ? 'warn' : 'err';
-        this.addLine(`\n${label} em ${msg['elapsed']}s`, cls);
-        // Build text output from lines rendered during this request
+        const cls   = done ? 'ok'        : cancelled ? 'warn'      : 'err';
+        this.addLine(`\n${label} em ${msg.elapsed}s`, cls);
         const capturedOutput = this.lines()
           .slice(this._reqStartLine)
           .map(l => l.text || '')
           .filter(t => t.trim())
           .join('\n');
-        // Prefer backend output (raw agent text); fall back to frontend capture
-        const requests = (msg['requests'] as SessionRequest[]).map(r =>
-          r.num === (msg['num'] as number)
+        const requests = msg.requests.map(r =>
+          r.num === msg.num
             ? { ...r, output: r.output ?? (capturedOutput || undefined) }
             : r
         );
@@ -194,37 +243,121 @@ export class Shell implements OnInit, OnDestroy {
         break;
       }
       case 'context_updated':
-        this.contextFrom.set(msg['from_agent'] as string | null);
+        this._flushPendingTool();
+        this.contextFrom.set(msg.from_agent);
         break;
       case 'lm_error':
+        this._flushPendingTool();
+        if (this._runTimer) { clearInterval(this._runTimer); this._runTimer = null; }
         this.running.set(false);
         this.lmOk.set(false);
-        this.addLine(`\nLM Studio: ${msg['text']}`, 'err');
+        this.addLine(`\nLM Studio: ${msg.text}`, 'err');
         break;
       case 'tool_call':
-        this._addHtml(
-          `<div class="tool-card">
-            <span class="icon sm">${this._toolIcon(msg['tool'] as string)}</span>
-            <span class="tool-name">${this._esc(msg['tool'] as string)}</span>
-          </div>`, 'tool-card-line');
+        this._flushPendingTool();
+        this._pendingToolName = msg.tool;
+        this._pendingToolN    = msg.n ?? 0;
         break;
-      case 'tool_input':
-        this._addHtml(
-          `<div class="tool-input">${this._esc((msg['input'] as string) || '')}</div>`,
-          'tool-input-line');
+      case 'tool_input': {
+        const pendingTool = this._pendingToolName;
+        this._pendingToolName = null;
+        this._pendingToolN    = 0;
+        if (pendingTool) {
+          if (msg.input) {
+            this._addHtml(`<div class="tool-path">${this._esc(msg.input)}</div>`, 'tool-path-line');
+          }
+          this._addHtml(
+            `<div class="tool-card">
+              <span class="icon sm">${this._toolIcon(pendingTool)}</span>
+              <span class="tool-name">${this._esc(pendingTool)}</span>
+              <span class="tool-dur"></span>
+            </div>`, 'tool-card-line');
+          this._lastToolCardIdx = this.lines().length - 1;
+        } else if (msg.input) {
+          this._addHtml(`<div class="tool-input">${this._esc(msg.input)}</div>`, 'tool-input-line');
+        }
         break;
+      }
       case 'tool_result':
-        break; // conteúdo já flui via output event
+        this._flushPendingTool();
+        break;
+      case 'tool_done': {
+        const idx = this._lastToolCardIdx;
+        if (idx >= 0) {
+          this.lines.update(arr => {
+            const copy = [...arr];
+            const line = copy[idx];
+            if (line?.html) {
+              copy[idx] = {
+                ...line,
+                html: line.html.replace(
+                  '<span class="tool-dur"></span>',
+                  `<span class="tool-dur">#${msg.n} · ${msg.secs}s</span>`
+                ),
+              };
+            }
+            return copy;
+          });
+        }
+        break;
+      }
       case 'fix_done':
+        this._flushPendingTool();
+        if (this._runTimer) { clearInterval(this._runTimer); this._runTimer = null; }
         this.running.set(false);
         break;
+      case 'plan_ready':
+        this._flushPendingTool();
+        this.planData.set(msg.plan);
+        this.planCountdown.set(600);
+        this.showPlanReview.set(true);
+        break;
+      case 'plan_rejected':
+        this._flushPendingTool();
+        this.showPlanReview.set(false);
+        this.planData.set(null);
+        break;
       case 'input_needed':
-        this.promptData.set({ prompt: msg['prompt'] as string, context: msg['context'] as string });
+        this._flushPendingTool();
+        this.promptData.set({ prompt: msg.prompt, context: msg.context });
         this.showPrompt.set(true);
         break;
       case 'input_done':
+        this._flushPendingTool();
         this.showPrompt.set(false);
         break;
+      case 'scanning':
+        // Add a pulsing status line; record its index so scanning_done can update it.
+        this.lines.update(ls => [...ls, { text: `⟳ ${msg.text}`, cls: 'scanning' }]);
+        this._scanningLineIdx = this.lines().length - 1;
+        break;
+      case 'scanning_done': {
+        const si = this._scanningLineIdx;
+        if (si >= 0) {
+          this.lines.update(arr => {
+            const copy = [...arr];
+            copy[si] = { ...copy[si], text: `✓ ${msg.text}`, cls: 'scanning-done' };
+            return copy;
+          });
+          this._scanningLineIdx = -1;
+        }
+        break;
+      }
+      case 'plan_countdown':
+        this.planCountdown.set(msg.remaining);
+        break;
+      case 'session_stats':
+        this.lastStats.set(msg.stats);
+        break;
+      case 'ping':
+        break;
+      default: {
+        // Exhaustiveness guard — TypeScript will error here if a union variant
+        // is added to SseMessage but not handled in this switch.
+        const _exhaustive: never = msg;
+        console.warn('[SSE] Unhandled message type:', (_exhaustive as SseMessage).type, msg);
+        break;
+      }
     }
   }
 
@@ -311,13 +444,24 @@ export class Shell implements OnInit, OnDestroy {
   }
 
   async onStartSession(projectPath: string) {
-    const data = await this.api.startSession(projectPath);
-    if (data.error) { alert(data.error); return; }
-    this.lines.set([]);
-    this.contextFrom.set(null);
-    this.showSetup.set(false);
-    this.addLine(`Projeto: ${projectPath}`, 'ok');
-    if (data.branch) this.addLine(`Branch: ${data.branch}`, 'dim');
+    try {
+      const data = await this.api.startSession(projectPath);
+      // Update session immediately — don't wait for SSE which has a race with lines.set([])
+      this.session.update(s => ({
+        ...s,
+        project_path: projectPath,
+        branch: data.branch ?? s.branch,
+        requests: [],
+      }));
+      this.lines.set([]);
+      this.contextFrom.set(null);
+      this.showSetup.set(false);
+      this.addLine(`Projeto: ${projectPath}`, 'ok');
+      if (data.branch) this.addLine(`Branch: ${data.branch}`, 'dim');
+    } catch (err: any) {
+      const msg: string = err?.error?.error ?? err?.message ?? 'Erro ao iniciar sessão';
+      this.setupError.set(msg);
+    }
   }
 
   async onSubmitRequest(request: string) {
@@ -328,8 +472,24 @@ export class Shell implements OnInit, OnDestroy {
       this.addLine(`LM Studio: ${lm.error}`, 'err');
       return;
     }
+    if (this.selectedAgent() === 'full-flow') {
+      const data = await this.api.fullFlow(request);
+      if (data.error) this.addLine('Erro: ' + data.error, 'err');
+      return;
+    }
     const data = await this.api.runAgent(this.selectedAgent(), request);
     if (data.error) this.addLine('Erro: ' + data.error, 'err');
+  }
+
+  async onApprovePlan(approvedIndices: number[]) {
+    this.showPlanReview.set(false);
+    await this.api.approvePlan(approvedIndices);
+  }
+
+  async onRejectPlan(feedback: string) {
+    this.showPlanReview.set(false);
+    this.planData.set(null);
+    await this.api.rejectPlan(feedback);
   }
 
   async onRespondInput(value: string) {
@@ -356,13 +516,37 @@ export class Shell implements OnInit, OnDestroy {
     else this.addLine(`Commit feito na branch ${data.branch}`, 'ok');
   }
 
-  async onNewSession() {
-    if (!confirm('Iniciar nova sessão? O histórico atual será apagado.')) return;
+  onNewSession() { this.showConfirmNewSession.set(true); }
+
+  onRollback() { this.showConfirmRollback.set(true); }
+
+  async confirmRollback() {
+    this.showConfirmRollback.set(false);
+    try {
+      await this.api.rollbackSession();
+    } catch (e: any) {
+      this.lines.update(ls => [...ls, { text: `Rollback falhou: ${e?.error?.error ?? e}`, cls: 'err' }]);
+    }
+  }
+
+  async onSetContext(num: number) {
+    try {
+      await this.api.setContext(num);
+    } catch { /* SSE context_updated will reflect the change */ }
+  }
+
+  async confirmNewSession() {
+    this.showConfirmNewSession.set(false);
     await this.api.clearSession();
     this.lines.set([]);
+    this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
     this.session.set({ project_path: '', branch: null, requests: [], started_at: null });
     this.showSetup.set(true);
   }
 
-  clearOutput() { this.lines.set([]); }
+  clearOutput() {
+    this.lines.set([]);
+    this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
+    this._pendingToolName = null;
+  }
 }

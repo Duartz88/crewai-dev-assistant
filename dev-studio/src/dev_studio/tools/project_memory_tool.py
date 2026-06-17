@@ -48,8 +48,10 @@ class ProjectMemoryWriteTool(BaseTool):
         path = os.path.join(project_path, MEMORY_FILE)
         date = datetime.now().strftime("%Y-%m-%d %H:%M")
         line = f"\n- **[{category}]** ({date}): {entry}"
+        needs_header = not os.path.exists(path)
         with open(path, "a", encoding="utf-8") as f:
-            if not os.path.exists(path):
+            if needs_header:
                 f.write("# Memória do Projeto (CrewAI)\n")
             f.write(line + "\n")
-        return f"✅  Memória registada: {entry[:60]}..."
+        suffix = "..." if len(entry) > 60 else ""
+        return f"✅  Memória registada: {entry[:60]}{suffix}"

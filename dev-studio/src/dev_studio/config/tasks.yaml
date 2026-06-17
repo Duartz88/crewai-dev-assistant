@@ -1,5 +1,10 @@
 design_task:
   description: >
+    ⚠️ REGRA ABSOLUTA: NUNCA escrevas "Final Answer" antes de teres executado TODOS os tool calls
+    obrigatórios abaixo. Listar passos que "vais executar" ou escrever chamadas de ferramenta como
+    texto NÃO é válido. Tens de CHAMAR cada ferramenta e obter a sua resposta primeiro.
+    Começa IMEDIATAMENTE com o primeiro tool call — não escrevas introdução nem plano.
+
     <pedido>
     {request}
     </pedido>
@@ -10,15 +15,18 @@ design_task:
 
     <projeto>{project_path}</projeto>
 
+    O <contexto_adicional> acima começa sempre com o PROJECT MAP do projeto.
+    ANTES DE PROPOR QUALQUER COISA: verifica o PROJECT MAP no contexto.
+    - Se a rota já existe no PROJECT MAP → NÃO a recries
+    - Se a classe/service já existe no PROJECT MAP → NÃO a recries
+    - Se não está no PROJECT MAP → provavelmente não existe (mas confirma com read_file)
+
     Executa os seguintes passos em ordem. Não saltes nenhum:
 
     PASSO 0 — Projectos externos mencionados no pedido
     Lê o pedido com atenção. Se mencionar caminhos de outros projectos ou ficheiros externos
     (ex: "compara com C:\...", "usa como referência C:\...", "baseado em C:\..."):
     a) Usa list_project_structure nesses caminhos para mapear a sua estrutura
-    b) Usa read_file para ler CADA ficheiro externo mencionado explicitamente
-    c) Regista o conteúdo desses ficheiros — vais precisar para a comparação
-    Se o pedido NÃO mencionar projectos externos, avança para o PASSO 1.
 
     PASSO 1 — Memória do projeto
     Usa a ferramenta read_project_memory com o caminho {project_path}.
@@ -28,27 +36,75 @@ design_task:
     Usa a ferramenta git_log com o caminho {project_path}.
     Identifica o que mudou recentemente e quem tocou em quê.
 
-    PASSO 3 — Estrutura do projeto actual [OBRIGATÓRIO]
-    Chama list_project_structure com o caminho {project_path}.
-    NÃO SALTES ESTE PASSO mesmo que já conheças a estrutura.
+    PASSO 3 — Estrutura do projeto actual
+    O PROJECT MAP gerado automaticamente já está incluído no início do {context}.
+    Usa-o directamente — NÃO chames list_project_structure para repetir o que já está lá.
+    Só chamas list_project_structure se precisares de explorar um sub-directório específico
+    que não aparece no PROJECT MAP, ou se suspeitas que ficheiros foram criados após o mapa ter sido gerado.
 
-    PASSO 4 — Leitura de ficheiros relevantes [OBRIGATÓRIO]
-    Para CADA ficheiro mencionado no pedido ou necessário para o plano:
+    PASSO 4 — Comparação directa de ficheiros [OBRIGATÓRIO quando o pedido pede comparação]
+    Executa este passo APÓS os PASSO 1-3 para teres contexto do projecto ao comparar.
+    Se o pedido mencionar ficheiros de referência para comparar com o projecto actual:
+    NÃO lês os dois ficheiros e comparas mentalmente — isso produz análises incompletas.
+    Em vez disso, para CADA par de ficheiros (referência vs actual):
+    1. Chama compare_files com:
+       - file_a = caminho do ficheiro de referência (que funciona bem)
+       - file_b = caminho do ficheiro do projecto actual (a corrigir)
+    2. Lê o diff LINHA A LINHA e cria um item em "issues" por cada grupo de diferenças:
+       - Linhas com '-' existem apenas na referência (versão correcta)
+       - Linhas com '+' existem apenas no ficheiro actual (o que está errado)
+       - Para cada diferença: snippet com a linha '-' (referência) e a linha '+' (actual)
+    3. REGRA DE GRANULARIDADE: cada bloco @@ do diff é um grupo de diferenças → um issue.
+       Não agregar todos os problemas num único issue — cada @@ separado = issue separado.
+       Um diff com 5 blocos @@ deve gerar pelo menos 5 issues.
+    4. Presta atenção especial a: nomes de parâmetros, operadores, nomes de variáveis,
+       strings, blocos try/catch presentes numa versão mas ausentes na outra
+    5. Regista o caminho do ficheiro do PROJECTO ACTUAL (file_b) em "files_read" —
+       NÃO o caminho do ficheiro de referência.
+    6. REGRA DE CONTEXTO — INTENCIONAL vs BUG: Ao comparar projectos do mesmo tipo mas
+       para dispositivos/produtos diferentes, estas diferenças são ESPERADAS e NÃO geram issues:
+       - Nomes de drivers, produtos, executáveis e DLLs específicos do dispositivo
+       - Paths/directorias que incorporam o nome do produto (ex: GlinttXXXDriver vs GlinttYYYDriver)
+       - Variáveis como $driverName, $driverInstaller, $logDir com nomes de produto distintos
+       Só são issues: erros de código independentes do produto — parâmetros de cmdlet inválidos,
+       operadores PowerShell incorrectos, lógica condicional errada, texto corrompido,
+       funcionalidade presente na referência mas COMPLETAMENTE AUSENTE no ficheiro actual.
+    ⛔ REGRA ANTI-DUPLICAÇÃO: o diff do compare_files já contém TODA a informação dos
+       ficheiros comparados. NÃO chames read_file para os ficheiros que acabaste de
+       processar com compare_files — é redundante e enche o contexto desnecessariamente.
+    Se o pedido NÃO mencionar projectos externos, avança para o PASSO 5.
+
+    PASSO 5 — Validação de sintaxe PowerShell [OBRIGATÓRIO se o pedido envolve ficheiros .ps1 ou .psm1]
+    Para CADA ficheiro PowerShell mencionado no pedido (no projecto actual, não na referência):
+    1. Chama validate_powershell com o caminho COMPLETO do ficheiro
+    2. Regista TODOS os erros encontrados — são bugs reais a incluir no plano
+    3. Verifica MANUALMENTE no diff do PASSO 4 estes padrões que o parser pode não apanhar
+       mas causam falha em runtime:
+       - Parâmetros de cmdlet inexistentes: ex. `-NotColor` (correcto: `-ForegroundColor`)
+       - Operadores de comparação inválidos: ex. `$null -not $var` (correcto: `$null -ne $var`)
+       - Sub-expressões `$()` corrompidas com tokens extra: ex. `$($_.Exception $x.Message)`
+       - Strings com caracteres não-ASCII inesperados no meio de palavras (indicador de corrupção)
+       Cada padrão encontrado = issue separado com snippet da linha problemática.
+    Se o pedido NÃO mencionar ficheiros PowerShell, avança directamente para o PASSO 6.
+
+    PASSO 6 — Leitura de ficheiros relevantes
+    ⛔ REGRA ANTI-DUPLICAÇÃO: Se já chamaste compare_files para um ficheiro no PASSO 4,
+       NÃO chames read_file para esse mesmo ficheiro. O diff já contém toda a informação.
+       Só chames read_file para ficheiros que NÃO foram comparados no PASSO 4.
+    Para CADA ficheiro necessário para o plano que NÃO foi comparado no PASSO 4:
     - Chama read_file com o caminho COMPLETO: {project_path}/caminho/ficheiro
     - NUNCA uses conteúdo que viste noutros contextos (git diff, memória, etc.)
       como substituto de uma leitura directa — lê SEMPRE com read_file
     - Se read_file retornar "⚠️ TRUNCADO": o ficheiro tem mais linhas.
       TENS DE chamar read_file novamente com start_line=<próxima linha indicada>
       e repetir até leres o ficheiro completo. Só depois podes concluir o que existe.
-    - Se o pedido pedir para "ler" ou "entender" um ficheiro específico,
-      TENS DE CHAMAR read_file para esse ficheiro. Não há excepção.
     - Se a memória do projecto ou grep indicam que algo já existe,
       TENS DE ler esse algo com read_file antes de propor qualquer alteração.
       "Existe na memória" ≠ "implementação completa" — verifica sempre.
     - Antes de propor criar novos ficheiros (screens, componentes), lê um ficheiro
       existente do mesmo tipo para garantir que segues o padrão do projecto.
 
-    PASSO 4b — Verificação de endpoints/API [OBRIGATÓRIO se o pedido envolve dados]
+    PASSO 6b — Verificação de endpoints/API [OBRIGATÓRIO se o pedido envolve dados]
     Se o pedido envolve listar, mostrar ou buscar dados da API:
     1. Usa list_project_structure para localizar os routers do backend
     2. Lê os routers relevantes com read_file
@@ -58,67 +114,64 @@ design_task:
     Sem chamar mark_endpoint_verified, o plano está incompleto.
     "Preciso verificar" ou "vou verificar" no plano = NÃO FIZESTE ESTE PASSO.
 
-    PASSO 5 — Produz o plano
-    Com base em TUDO o que leste (projectos externos + projecto actual), produz o plano.
-    Para tarefas de comparação: documenta diferenças concretas com trechos de código.
+    PASSO 7 — Verificação de cobertura ANTES de produzir o plano
+    Antes de escrever o plano, verifica:
+    - Quantos pares de ficheiros comparaste no PASSO 4? (ex: 2 pares)
+    - Tens issues para TODOS os ficheiros do projecto? (ex: issues para os 2 ficheiros)
+    - Se falta algum ficheiro → STOP, volta ao PASSO 4 e compara o ficheiro em falta.
+    Só depois produz o plano com base em TUDO o que leste.
+    Para tarefas de comparação: para cada issue, inclui no "plan" um bloco ANTES/DEPOIS:
+    - ANTES = código ERRADO no ficheiro actual (linhas '+' do diff — o que está a corrigir)
+    - DEPOIS = código CORRECTO após a correcção (baseado nas linhas '-' da referência)
+    Nunca inverteres a ordem: ANTES mostra o problema, DEPOIS mostra a solução.
+    Copia do diff — não inventes código.
 
-    VERIFICAÇÃO ANTES DE RESPONDER:
+    VERIFICAÇÃO FINAL — CONFIRMA (NÃO RE-EXECUTA) antes de "Final Answer":
+    Olha para os tool calls que já fizeste acima e confirma cada item:
     - [ ] Chamei read_project_memory? (PASSO 1)
     - [ ] Chamei git_log? (PASSO 2)
-    - [ ] Chamei list_project_structure? (PASSO 3)
-    - [ ] Chamei read_file para todos os ficheiros relevantes? (PASSO 4)
-    - [ ] Se o pedido envolve dados da API: chamei mark_endpoint_verified
-          para cada endpoint proposto? (PASSO 4b)
-          Se NÃO → chama agora. O plano sem mark_endpoint_verified será rejeitado.
-    Se algum NÃO, executa-o agora antes de produzir o plano.
+    - [ ] Li o PROJECT MAP no contexto (ou chamei list_project_structure se necessário)? (PASSO 3)
+    - [ ] Se o pedido envolve comparação: chamei compare_files para CADA par de ficheiros? (PASSO 4)
+    - [ ] Tenho pelo menos um issue por ficheiro do projecto que comparei? (PASSO 4)
+    - [ ] Se o pedido envolve .ps1/.psm1: chamei validate_powershell para cada .ps1 do projecto? (PASSO 5)
+    - [ ] Se o pedido envolve dados da API: chamei mark_endpoint_verified? (PASSO 6b)
+
+    ⛔ SE JÁ EXECUTASTE TODOS OS PASSOS APLICÁVEIS → escreve "Final Answer" agora.
+    ⛔ NÃO REPITAS ferramentas que já chamaste para o mesmo ficheiro.
+    ⛔ O checklist é para CONFIRMAR o que já fizeste — NÃO para re-executar.
+    ⛔ "Final Answer" sem tool calls = RESPOSTA INVÁLIDA. Executa primeiro, responde depois.
 
     RESTRIÇÕES:
     - Não propões criar diretórios de topo a não ser que o pedido o exija explicitamente
     - Listas TODOS os endpoints/funções/classes existentes nos ficheiros a modificar
     - O plano cobre APENAS o que é pedido — sem melhorias não solicitadas
-    - Se o pedido for ambíguo, incluis uma secção "Perguntas" com as dúvidas
+    - Se o pedido for ambíguo, incluis uma secção "Perguntas" no campo "plan"
 
-    Responde em português.
+    OUTPUT OBRIGATÓRIO — JSON PURO:
+    O teu "Final Answer" DEVE começar IMEDIATAMENTE com '{' — sem prefixos, sem ```json,
+    sem "Here is the output", sem nenhum texto antes do JSON. JSON puro directo.
+    ⚠️ JSON ESCAPING OBRIGATÓRIO: Dentro de strings JSON, a barra invertida (\) DEVE ser
+    duplicada (\\). Exemplos correctos: "C:\\\_PROJECTS\\\\file.ps1", "tools\\\\install.ps1".
+    Uma barra simples antes de letras (ex: \_  \P  \d  \C) é JSON INVÁLIDO e rejeita o output.
+    Campos obrigatórios:
+    - "files_read": paths dos ficheiros do PROJECTO ACTUAL que leste ou comparaste.
+      NÃO incluis ficheiros de referência externos. OBRIGATÓRIO — vazio = rejeitado.
+    - "issues": um item por bloco de diferenças (@@ do diff) ou por erro de sintaxe.
+      Cada item: {file, line, description, snippet, severity}.
+      snippet = linhas '+' do diff (código problemático no ficheiro actual) mais linhas '-'
+      (da referência, para contexto). As '+' mostram o que está errado; as '-' o correcto.
+      Issue sem snippet = inválido. Não agregar múltiplas diferenças num único issue.
+    - "changes": ficheiros do projecto a modificar, um por ficheiro. {path, action, reason, location}
+    - "endpoints_verified": endpoints verificados (vazio [] se não aplicável)
+    - "plan": markdown em português com ANTES/DEPOIS para cada issue (código exacto do diff)
+
+    Coloca todo o conteúdo textual dentro do campo "plan" em markdown.
+    Fora do JSON não podes escrever absolutamente nada.
   expected_output: >
-    ## Contexto do projeto
-    [O que aprendeste da memória + git log: decisões anteriores, padrões, mudanças recentes]
-
-    ## Pedido
-    [Resumo claro do que foi pedido]
-
-    ## Endpoints verificados (obrigatório se o pedido envolve dados da API)
-    Preenche com os resultados de mark_endpoint_verified, um por linha:
-    - `GET /points/MEMBER_ID` — api/app/routers/points.py linha 27 — PointsBalanceOut
-    (omite esta secção se o pedido não envolver endpoints da API)
-
-    ## Análise dos ficheiros existentes
-    [Para cada ficheiro relevante: lista de endpoints/funções/classes que já existem e DEVEM ser preservados]
-
-    ## Plano de implementação
-
-    ### Ficheiros a CRIAR
-    - `caminho/ficheiro.ext` — propósito claro
-
-    ### Ficheiros a MODIFICAR
-    - `caminho/ficheiro.ext`
-      - Preservar: [lista de o que não deve ser tocado]
-      - Localização exacta: linha ~N, função/componente `nomeDaFunção`
-      - Endpoint/serviço usado: `MÉTODO /caminho` encontrado em `router/ficheiro.py` linha ~N
-        (ou "não existe — criar endpoint com schema X")
-      - Código ACTUAL nessa localização (copiado do read_file):
-        ```
-        [trecho exacto que vai ser alterado]
-        ```
-      - Código DEPOIS da alteração:
-        ```
-        [como deve ficar]
-        ```
-
-    ### Ficheiros a NÃO TOCAR
-    - [razão pela qual não devem ser modificados]
-
-    ## Perguntas ao utilizador (se aplicável)
-    [Dúvidas que precisam de resposta antes de implementar — omite esta secção se não existirem]
+    JSON com campos: files_read (paths dos ficheiros lidos), issues (problemas com evidência
+    file+line+snippet), changes (ficheiros a criar/modificar com localização), endpoints_verified,
+    e plan (plano completo em markdown português com blocos ANTES/DEPOIS).
+    files_read vazio = plano inválido. Issue sem snippet = issue inválido.
   agent: architect
 
 implement_task:
@@ -132,6 +185,15 @@ implement_task:
     </pedido>
 
     <projeto>{project_path}</projeto>
+
+    O <plano_aprovado> é um JSON com os campos: files_read, issues, changes, endpoints_verified, plan.
+    Lê o campo "changes" para saber quais ficheiros criar/modificar e onde.
+    Lê o campo "issues" para os problemas concretos a corrigir (com file+line+snippet).
+    Lê o campo "plan" para o plano detalhado com trechos de código.
+    Lê o campo "endpoints_verified" para os endpoints já confirmados que podes usar.
+
+    O PROJECT MAP está incluído no contexto. PROIBIDO criar rotas ou classes que já constem
+    no PROJECT MAP (a não ser que o plano diga explicitamente para as modificar).
 
     Implementa o pedido seguindo o plano/contexto acima. Para cada ficheiro, segue estes passos:
 
@@ -156,8 +218,8 @@ implement_task:
        Se não identificas a localização exacta com base no plano, PARA e relê o plano.
        Não patches por adivinhação.
     3. ATENÇÃO — UI vs dados (erro comum):
-       - Alterações de UI (React Native/Angular): procura o componente JSX que RENDERIZA
-         o elemento (TouchableOpacity, onPress, onClick) — NÃO a função de carregamento
+       - Alterações de UI (Angular, React ou framework equivalente): procura o componente
+         que RENDERIZA o elemento — (click), onClick, ng-click, etc. — NÃO a função de carregamento
        - Alterações de dados/API: procura a função que chama o endpoint
        Nunca confundas rendering com data loading.
     4. Usa patch_file com:
@@ -176,37 +238,18 @@ implement_task:
     NO FINAL:
     Usa write_project_memory para registar as decisões de implementação mais importantes.
 
-    Responde em português.
+    OUTPUT OBRIGATÓRIO — JSON:
+    O teu "Final Answer" DEVE ser um objecto JSON válido com exactamente estes campos:
+    - "files_modified": lista de caminhos absolutos dos ficheiros modificados com patch_file
+    - "files_created": lista de caminhos absolutos dos ficheiros criados com write_file
+    - "syntax_errors": lista de erros de sintaxe encontrados {file, line, description, snippet}
+    - "summary": resumo em português com blocos ANTES/DEPOIS para cada alteração
+
+    Não escrevas markdown fora do JSON. Coloca tudo dentro do campo "summary".
   expected_output: >
-    ## Ficheiros processados
-
-    Para cada ficheiro modificado usa EXACTAMENTE este formato:
-
-    ### `caminho/ficheiro.ext` — MODIFICADO
-
-    **ANTES:**
-    ```lang
-    [bloco de código original que foi alterado]
-    ```
-    **DEPOIS:**
-    ```lang
-    [bloco de código novo que substituiu o original]
-    ```
-
-    Para ficheiros criados:
-
-    ### `caminho/ficheiro.ext` — CRIADO
-    ```lang
-    [conteúdo completo do ficheiro]
-    ```
-
-    ## Confirmações
-    - Nenhuma funcionalidade existente foi removida: Sim/Não
-    - Todos os ficheiros do plano foram processados: Sim/Não
-    - Memória do projeto actualizada: Sim/Não
-
-    ## Notas de implementação
-    [Decisões técnicas relevantes e problemas encontrados]
+    JSON com campos: files_modified (paths modificados), files_created (paths criados),
+    syntax_errors (erros encontrados com evidência), e summary (resumo em markdown português
+    com blocos ANTES/DEPOIS para cada ficheiro alterado).
   agent: developer
 
 fix_task:
@@ -235,27 +278,17 @@ fix_task:
     - Corrigir mais do que os problemas listados pelo Reviewer
     - Reconstruir código de memória — copia SEMPRE do read_file
 
-    Responde em português.
+    OUTPUT OBRIGATÓRIO — JSON:
+    O teu "Final Answer" DEVE ser um objecto JSON válido com exactamente estes campos:
+    - "files_modified": lista de caminhos absolutos dos ficheiros modificados com patch_file
+    - "files_created": lista de caminhos absolutos dos ficheiros criados com write_file
+    - "syntax_errors": lista de erros de sintaxe encontrados {file, line, description, snippet}
+    - "summary": para cada problema: estado (Resolvido/Parcial), ANTES e DEPOIS do código
+
+    Não escrevas markdown fora do JSON. Coloca tudo dentro do campo "summary".
   expected_output: >
-    ## Correcções aplicadas
-
-    Para cada problema usa EXACTAMENTE este formato:
-
-    ### Problema [N]: [descrição]
-    **Ficheiro:** `caminho/ficheiro.ext`
-
-    **ANTES:**
-    ```lang
-    [código com o problema]
-    ```
-    **DEPOIS:**
-    ```lang
-    [código corrigido]
-    ```
-    **Estado:** Resolvido / Parcialmente resolvido (explica porquê)
-
-    ## Confirmação
-    Todos os problemas identificados foram endereçados: Sim/Não
+    JSON com campos: files_modified, files_created, syntax_errors, e summary (markdown português
+    com estado de cada correcção e blocos ANTES/DEPOIS).
   agent: developer
 
 review_task:
@@ -270,6 +303,10 @@ review_task:
 
     <projeto>{project_path}</projeto>
 
+    O <implementacao_a_rever> é um JSON com campos: files_modified, files_created,
+    syntax_errors, summary. Lê o campo "files_modified" e "files_created" para saber
+    que ficheiros verificar. Lê o campo "syntax_errors" — estes são problemas já detectados.
+
     Revê a implementação executando estes passos em ordem:
 
     PASSO 1 — Testes automáticos
@@ -280,6 +317,14 @@ review_task:
     Usa read_file para cada ficheiro que foi alterado (menciona o contexto acima).
     Se o pedido original referenciar ficheiros de outro projecto, usa read_file
     nesses ficheiros externos para comparação directa.
+
+    PASSO 2b — Validação de sintaxe PowerShell [se aplicável]
+    Se o contexto ou o pedido original referenciar ficheiros .ps1 ou .psm1:
+    Para CADA ficheiro PowerShell mencionado no contexto (usa o caminho COMPLETO tal como aparece):
+    1. Chama validate_powershell com esse caminho
+    2. Regista TODOS os erros encontrados (linha exacta, descrição)
+    3. Adiciona estes erros como problemas adicionais na secção "Problemas a corrigir"
+    Os erros de sintaxe PowerShell são SEMPRE problemas reais — inclui todos sem filtrar.
 
     PASSO 3 — Verificação do checklist
     Para cada ponto abaixo, responde Sim ou Não com justificação:
@@ -294,24 +339,28 @@ review_task:
     PASSO 4 — Memória
     Usa write_project_memory para registar padrões úteis ou problemas recorrentes.
 
-    Responde em português.
+    REGRAS DE EVIDÊNCIA — OBRIGATÓRIAS:
+    Cada problema no campo "issues" DEVE ter:
+    - "file": caminho absoluto do ficheiro (copiado do read_file)
+    - "line": número de linha exacto
+    - "snippet": trecho de código copiado do read_file que prova o problema
+    Um problema sem snippet é inválido e será ignorado automaticamente.
+    "O código parece errado" sem prova de ficheiro = NÃO É UM PROBLEMA VÁLIDO.
+
+    OUTPUT OBRIGATÓRIO — JSON:
+    O teu "Final Answer" DEVE ser um objecto JSON válido com exactamente estes campos:
+    - "approved": true se aprovado, false se requer correcções
+    - "issues": lista de problemas APENAS com evidência real {file, line, description, snippet, severity}
+    - "tests_passed": true / false / null (null se não há testes)
+    - "verdict": "Aprovado" ou "Requer correções: <motivo>"
+    - "summary": relatório completo em markdown português
+
+    Se approved=false, issues NÃO pode estar vazio.
+    Se approved=true, issues DEVE estar vazio.
+    Não escrevas markdown fora do JSON. Coloca tudo dentro do campo "summary".
   expected_output: >
-    ## Resultado dos testes
-    [Output exacto do run_tests ou "Sem suite de testes detectada"]
-
-    ## Checklist de revisão
-    1. Endpoints/funções preservados: Sim/Não — [detalhe]
-    2. Imports Python correctos: Sim/Não — [detalhe]
-    3. Scope respeitado (sem ficheiros extra): Sim/Não — [detalhe]
-    4. Testes passam: Sim/Não — [detalhe]
-    5. Padrões do projeto seguidos: Sim/Não — [detalhe]
-    6. Sem problemas de qualidade (paths, credenciais, logs): Sim/Não — [detalhe]
-
-    ## Veredicto
-    Aprovado
-    ou
-    Requer correções
-
-    ## Problemas a corrigir (se aplicável)
-    [Lista numerada e precisa — omite se aprovado]
+    JSON com campos: approved (bool), issues (problemas com file+line+snippet obrigatórios),
+    tests_passed (true/false/null), verdict ("Aprovado" ou "Requer correções: motivo"),
+    e summary (relatório completo em markdown português).
+    Issue sem snippet é automaticamente inválido.
   agent: reviewer

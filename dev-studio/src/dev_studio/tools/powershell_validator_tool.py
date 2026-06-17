@@ -11,7 +11,7 @@ class PowerShellValidatorInput(BaseModel):
 
 
 class ValidatePowerShellTool(BaseTool):
-    name: str = "validate_powershell_syntax"
+    name: str = "validate_powershell"
     description: str = (
         "Validate PowerShell script syntax using the PowerShell parser. "
         "Detects: invalid parameters, syntax errors, missing brackets, "

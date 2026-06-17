@@ -150,6 +150,19 @@ class PatchFileTool(BaseTool):
             print(f"... (+{len(diff) - 80} linhas)")
         print("=" * 60)
 
+        try:
+            from dev_studio.api import capture as _cap
+            dashboard_active = _cap._dashboard_active
+        except Exception:
+            dashboard_active = False
+
+        if dashboard_active:
+            # Running inside the Dev Studio dashboard — skip interactive prompt.
+            # The agent has already shown the diff via stdout; auto-apply the patch.
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(patched)
+            return f"✅ Patch aplicado em '{filename}' (modo dashboard)."
+
         answer = input("\n  Aprovas este patch? (s/n): ").strip().lower()
         if answer != "s":
             return f"Cancelado: '{filename}' não foi alterado."

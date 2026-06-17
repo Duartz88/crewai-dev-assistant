@@ -24,6 +24,12 @@
     <div class="detail-panel">
       <div class="detail-header">
         <span class="detail-req" [title]="selectedRequest()!.request">#{{ selectedRequest()!.num }} {{ selectedRequest()!.request }}</span>
+        <button class="detail-btn" (click)="setContext()" title="Usar como contexto para o próximo pedido">
+          <span class="icon sm">arrow_right_alt</span>
+        </button>
+        <button class="detail-btn" (click)="copyRequest()" title="Copiar prompt">
+          <span class="icon sm">edit_note</span>
+        </button>
         <button class="detail-btn" (click)="copyOutput()" title="Copiar output">
           <span class="icon sm">content_copy</span>
         </button>
@@ -41,3 +47,17 @@
     </div>
   }
 </div>
+
+@if (statEntries().length > 0) {
+  <div class="section stats-section">
+    <h3>Tool Calls — {{ statEntries().length }} tipos · {{ totalSecs() }}s</h3>
+    @for (e of statEntries(); track e.name) {
+      <div class="stat-row">
+        <span class="stat-name" [title]="e.name">{{ e.name }}</span>
+        <span class="stat-count">×{{ e.count }}</span>
+        <span class="stat-secs">{{ e.total_secs }}s</span>
+        <div class="stat-bar" [style.width.%]="(e.total_secs / totalSecs()) * 100"></div>
+      </div>
+    }
+  </div>
+}

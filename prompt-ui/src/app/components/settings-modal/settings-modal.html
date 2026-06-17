@@ -1,0 +1,43 @@
+<div class="overlay">
+  <div class="box">
+    <div class="modal-header">
+      <span class="icon sm">tune</span>
+      <span class="modal-title">Definições LM Studio</span>
+      <button class="close-btn" (click)="close.emit()">
+        <span class="icon sm">close</span>
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <label class="field-label">URL Base do LM Studio</label>
+      <input class="field-input" type="text" [value]="lmBaseUrl()"
+             (input)="lmBaseUrl.set($any($event.target).value)"
+             placeholder="http://localhost:1234/v1" />
+      <span class="field-hint">Porta padrão do LM Studio: 1234</span>
+
+      <label class="field-label">API Key</label>
+      <input class="field-input" type="password" [value]="lmApiKey()"
+             (input)="lmApiKey.set($any($event.target).value)"
+             placeholder="lm-studio" />
+      <span class="field-hint">Normalmente "lm-studio" ou qualquer valor</span>
+
+      <label class="field-label">Nome do Modelo</label>
+      <input class="field-input" type="text" [value]="modelName()"
+             (input)="modelName.set($any($event.target).value)"
+             placeholder="ex: Qwopus3.6-27B-Coder-MTP-GGUF" />
+      <span class="field-hint">Nome exacto do modelo carregado em LM Studio</span>
+
+      @if (error()) {
+        <span class="err-msg">{{ error() }}</span>
+      }
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn-cancel" (click)="close.emit()">Cancelar</button>
+      <button class="btn-save" (click)="save()" [disabled]="saving()">
+        <span class="icon sm">{{ saved() ? 'check' : 'save' }}</span>
+        {{ saved() ? 'Guardado!' : saving() ? 'A guardar…' : 'Guardar' }}
+      </button>
+    </div>
+  </div>
+</div>

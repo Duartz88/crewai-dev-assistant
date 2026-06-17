@@ -20,7 +20,18 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.history { flex: 1; overflow-y: auto; padding: 4px 0; }
+.history {
+  flex: 1; overflow-y: auto; padding: 4px 0;
+  // Custom scrollbar — visible thin bar so user knows there's more content
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  &::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+  // Fade out at bottom to hint at more items below
+  mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
+}
 
 .hist-item {
   padding: 6px 14px; font-size: 12px;
@@ -67,6 +78,22 @@
   display: flex; align-items: center; flex-shrink: 0;
   transition: color 0.12s;
   &:hover { color: var(--text); }
+}
+
+// ── Tool call stats ────────────────────────────────────────────────────────────
+.stats-section { flex-shrink: 0; border-top: 1px solid var(--border); }
+
+.stat-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; padding: 2px 0 3px; position: relative;
+}
+.stat-name  { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+.stat-count { color: var(--accent); font-family: monospace; flex-shrink: 0; }
+.stat-secs  { color: var(--dim); font-family: monospace; flex-shrink: 0; font-size: 10px; }
+.stat-bar   {
+  position: absolute; bottom: 0; left: 0; height: 1px;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: width .35s;
 }
 
 .detail-content {

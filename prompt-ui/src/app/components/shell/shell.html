@@ -2,8 +2,9 @@
   *ngIf="showSetup()"
   [initialPath]="session().project_path"
   [cancelable]="!!session().project_path"
-  (start)="onStartSession($event)"
-  (cancel)="showSetup.set(false)" />
+  [errorMsg]="setupError()"
+  (start)="setupError.set(''); onStartSession($event)"
+  (cancel)="setupError.set(''); showSetup.set(false)" />
 
 <app-prompt-modal
   *ngIf="showPrompt()"
@@ -21,14 +22,54 @@
   (close)="showBranch.set(false)"
   (branchDeleted)="session.update(s => ({...s, branch: $event ? null : s.branch})); lines.update(ls => [...ls, {text: 'Branch apagada', cls: 'warn'}])" />
 
+<app-plan-review-modal
+  *ngIf="showPlanReview() && planData()"
+  [plan]="planData()!"
+  [countdown]="planCountdown()"
+  (approve)="onApprovePlan($event)"
+  (reject)="onRejectPlan($event)" />
+
+@if (showSettings()) {
+  <app-settings-modal (close)="showSettings.set(false)" />
+}
+
+@if (showConfirmNewSession()) {
+  <div class="confirm-overlay">
+    <div class="confirm-box">
+      <span class="icon" style="font-size:22px;color:var(--yellow)">warning</span>
+      <span class="confirm-msg">Iniciar nova sessão?<br><small>O histórico desta sessão será apagado.</small></span>
+      <div class="confirm-actions">
+        <button class="btn-confirm-cancel" (click)="showConfirmNewSession.set(false)">Cancelar</button>
+        <button class="btn-confirm-ok" (click)="confirmNewSession()">Nova sessão</button>
+      </div>
+    </div>
+  </div>
+}
+
+@if (showConfirmRollback()) {
+  <div class="confirm-overlay">
+    <div class="confirm-box">
+      <span class="icon" style="font-size:22px;color:var(--red)">history</span>
+      <span class="confirm-msg">Desfazer sessão?<br><small>git reset --hard para o commit inicial. Alterações serão perdidas.</small></span>
+      <div class="confirm-actions">
+        <button class="btn-confirm-cancel" (click)="showConfirmRollback.set(false)">Cancelar</button>
+        <button class="btn-confirm-rollback" (click)="confirmRollback()">Desfazer sessão</button>
+      </div>
+    </div>
+  </div>
+}
+
 <header>
   <span class="icon lg" style="color:var(--accent)">terminal</span>
   <h1>Dev Studio</h1>
   <span class="badge project-badge" (click)="showSetup.set(true)" title="Mudar projeto">
     <span class="icon sm">folder_open</span> {{ projectName() }}
   </span>
+  @for (lang of languages(); track lang) {
+    <span class="badge lang-badge">{{ lang }}</span>
+  }
   <span class="badge" [class.active]="session().branch">{{ session().branch || '—' }}</span>
-  <span class="badge" [class.running]="running()">{{ running() ? 'A correr...' : 'Idle' }}</span>
+  <span class="badge" [class.running]="running()">{{ running() ? (elapsedLabel()) : 'Idle' }}</span>
   @if (running()) {
     <button class="btn btn-stop" (click)="stopRequest()" title="Parar execução">
       <span class="icon sm">stop_circle</span>
@@ -41,9 +82,15 @@
     <span class="icon sm">{{ lmOk() === false ? 'memory_off' : 'memory' }}</span>
     {{ lmOk() === null ? '...' : lmOk() ? (lmModel() ?? 'LM OK') : 'Sem modelo' }}
   </span>
+  <button class="btn btn-gear" (click)="showSettings.set(true)" title="Definições LM Studio">
+    <span class="icon sm">tune</span>
+  </button>
   <div class="spacer"></div>
   <button class="btn" (click)="clearOutput()" title="Limpar output">
     <span class="icon sm">delete_sweep</span> Limpar
+  </button>
+  <button class="btn btn-rollback" (click)="onRollback()" title="Desfazer sessão (git reset --hard)">
+    <span class="icon sm">history</span>
   </button>
   <button class="btn" (click)="showBranch.set(true)" title="Gerir branches">
     <span class="icon sm">account_tree</span> Branches
@@ -57,7 +104,11 @@
 </header>
 
 <div class="layout">
-  <app-sidebar [session]="session()" [style.width.px]="sidebarWidth()" />
+  <app-sidebar
+    [session]="session()"
+    [lastStats]="lastStats()"
+    [style.width.px]="sidebarWidth()"
+    (useContext)="onSetContext($event)" />
   <div class="resize-handle" (mousedown)="onResizeStart($event)"></div>
   <app-output-pane
     [lines]="lines()"

@@ -8,7 +8,7 @@ export class ApiService {
   constructor(private http: HttpClient) {}
 
   getStatus() {
-    return firstValueFrom(this.http.get<{ session: Session; running: boolean; has_changes: boolean }>('/api/status'));
+    return firstValueFrom(this.http.get<{ session: Session; running: boolean; has_changes: boolean; languages?: string[] }>('/api/status'));
   }
 
   startSession(projectPath: string) {
@@ -53,5 +53,34 @@ export class ApiService {
 
   getLmStatus() {
     return firstValueFrom(this.http.get<{ ok: boolean; error: string | null; model: string | null }>('/api/lm-status'));
+  }
+
+  fullFlow(request: string) {
+    return firstValueFrom(this.http.post<{ ok: boolean; num: number; error?: string }>('/api/request/full-flow', { request }));
+  }
+
+  approvePlan(approvedIndices?: number[]) {
+    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/plan/approve',
+      approvedIndices != null ? { approved_indices: approvedIndices } : {}));
+  }
+
+  rejectPlan(feedback: string) {
+    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/plan/reject', { feedback }));
+  }
+
+  getSettings() {
+    return firstValueFrom(this.http.get<{ lm_base_url: string; lm_api_key: string; model_name: string }>('/api/settings'));
+  }
+
+  saveSettings(data: { lm_base_url: string; lm_api_key: string; model_name: string }) {
+    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/settings', data));
+  }
+
+  rollbackSession() {
+    return firstValueFrom(this.http.post<{ ok: boolean; commit: string; output: string; error?: string }>('/api/session/rollback', {}));
+  }
+
+  setContext(num: number) {
+    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/session/set-context', { num }));
   }
 }

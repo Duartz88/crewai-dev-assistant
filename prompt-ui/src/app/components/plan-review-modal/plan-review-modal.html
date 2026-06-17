@@ -1,0 +1,142 @@
+<div class="overlay">
+  <div class="box">
+
+    <!-- Header -->
+    <div class="modal-header">
+      <span class="icon sm">architecture</span>
+      <span class="modal-title">Plano do Arquitecto</span>
+      <div class="header-chips">
+        <span class="chip chip-files">
+          <span class="icon sm">edit_note</span>
+          {{ plan().changes.length }} ficheiro(s) a modificar
+        </span>
+        <span class="chip chip-issues">
+          <span class="icon sm">warning</span>
+          {{ plan().issues.length }} problema(s)
+        </span>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab-btn" [class.active]="tab() === 'plan'"    (click)="tab.set('plan')">
+        <span class="icon sm">description</span> Plano
+      </button>
+      <button class="tab-btn" [class.active]="tab() === 'issues'"  (click)="tab.set('issues')">
+        <span class="icon sm">bug_report</span> Problemas ({{ plan().issues.length }})
+      </button>
+      <button class="tab-btn" [class.active]="tab() === 'changes'" (click)="tab.set('changes')">
+        <span class="icon sm">drive_file_rename_outline</span> Mudanças ({{ plan().changes.length }})
+      </button>
+    </div>
+
+    <!-- Tab: Plano -->
+    @if (tab() === 'plan') {
+      <div class="tab-body">
+        @if (plan().plan) {
+          <pre class="plan-text">{{ plan().plan }}</pre>
+        } @else {
+          <p class="empty-hint">Sem plano de texto.</p>
+        }
+      </div>
+    }
+
+    <!-- Tab: Problemas -->
+    @if (tab() === 'issues') {
+      <div class="tab-body">
+        @if (plan().issues.length === 0) {
+          <p class="empty-hint">Nenhum problema identificado.</p>
+        }
+        @for (issue of plan().issues; track $index) {
+          <div class="issue-card">
+            <div class="issue-header">
+              <span class="sev-badge" [class]="severityCls(issue.severity)">{{ issue.severity }}</span>
+              <span class="issue-file" title="{{ issue.file }}">{{ issue.file }}</span>
+              @if (issue.line) {
+                <span class="issue-line">linha {{ issue.line }}</span>
+              }
+            </div>
+            <div class="issue-desc">{{ issue.description }}</div>
+            @if (issue.snippet) {
+              <div class="snippet">
+                @for (ln of snippetLines(issue); track $index) {
+                  <div class="snip-line" [class]="ln.cls">{{ ln.text }}</div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+    }
+
+    <!-- Tab: Mudanças -->
+    @if (tab() === 'changes') {
+      <div class="tab-body">
+        @if (plan().changes.length === 0) {
+          <p class="empty-hint">Nenhuma mudança planeada.</p>
+        } @else {
+          <div class="changes-toolbar">
+            <span class="approved-count">{{ approvedSet().size }}/{{ plan().changes.length }} seleccionados</span>
+            <button class="btn-toggle-all" (click)="toggleAll()">
+              {{ approvedSet().size === plan().changes.length ? 'Desmarcar tudo' : 'Marcar tudo' }}
+            </button>
+          </div>
+          @for (ch of plan().changes; track $index) {
+            <div class="change-card" [class.excluded]="!isApproved($index)">
+              <div class="change-header">
+                <input type="checkbox" class="change-check" [checked]="isApproved($index)"
+                       (change)="toggleChange($index)" />
+                <span class="action-badge" [class]="ch.action === 'create' ? 'act-create' : 'act-modify'">
+                  <span class="icon sm">{{ ch.action === 'create' ? 'add_circle' : 'edit' }}</span>
+                  {{ ch.action }}
+                </span>
+                <span class="change-file" title="{{ ch.path }}">{{ ch.path }}</span>
+              </div>
+              @if (ch.reason) { <div class="change-reason">{{ ch.reason }}</div> }
+              @if (ch.location) { <div class="change-loc">Localização: {{ ch.location }}</div> }
+            </div>
+          }
+        }
+      </div>
+    }
+
+    <!-- Feedback textarea (shown on reject) -->
+    @if (showFeedback()) {
+      <div class="feedback-area">
+        <label class="feedback-label">Feedback para o Arquitecto (opcional):</label>
+        <textarea
+          class="feedback-input"
+          [(ngModel)]="feedback"
+          placeholder="Descreve o que deve ser corrigido ou melhorado no plano..."
+          rows="3">
+        </textarea>
+      </div>
+    }
+
+    <!-- Actions -->
+    <div class="modal-footer">
+      @if (!showFeedback()) {
+        <button class="btn btn-reject" (click)="doReject()">
+          <span class="icon sm">thumb_down</span> Rejeitar
+        </button>
+      } @else {
+        <button class="btn btn-cancel" (click)="cancelReject()">
+          <span class="icon sm">close</span> Cancelar
+        </button>
+        <button class="btn btn-reject-confirm" (click)="doReject()">
+          <span class="icon sm">send</span> Enviar rejeição
+        </button>
+      }
+      <div class="spacer"></div>
+      <span class="countdown-label" [class.expiring]="countdown() < 120">
+        <span class="icon sm">timer</span> {{ countdownLabel() }}
+      </span>
+      @if (!showFeedback()) {
+        <button class="btn btn-approve" (click)="doApprove()" [class.btn-conclude]="hasNoChanges() || noneSelected()">
+          <span class="icon sm">{{ approveIcon() }}</span> {{ approveLabel() }}
+        </button>
+      }
+    </div>
+
+  </div>
+</div>

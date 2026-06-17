@@ -3,7 +3,13 @@
     <h2><span class="icon" style="color:var(--accent);margin-right:8px">terminal</span>Dev Studio</h2>
     <label>Caminho do projeto</label>
     <input type="text" [(ngModel)]="path" placeholder="C:\_PROJECTS\MyApp"
+           [class.input-error]="errorMsg()"
            (keydown.enter)="submit()" autofocus />
+    @if (errorMsg()) {
+      <div class="error-msg">
+        <span class="icon sm">error</span> {{ errorMsg() }}
+      </div>
+    }
     <div class="modal-actions">
       @if (cancelable()) {
         <button class="btn" (click)="cancel.emit()">

@@ -52,15 +52,21 @@ class ProjectFileReadTool(BaseTool):
             end   = min(start + _DEFAULT_PAGE, total)
 
             chunk = all_lines[start:end]
-            header = f"[Ficheiro: {os.path.basename(resolved)} | Linhas {start+1}–{end} de {total}]\n"
+            complete = end >= total
+            status = (
+                f"✅ COMPLETO: {total}/{total} linhas"
+                if complete
+                else f"⚠️ TRUNCADO: linhas {start+1}–{end} de {total} — chama read_file com start_line={end+1}"
+            )
+            header = f"[{os.path.basename(resolved)} | {status}]\n"
             content = header + "\n".join(chunk)
 
-            if end < total:
+            if not complete:
                 remaining = total - end
                 content += (
-                    f"\n\n⚠️  TRUNCADO — apenas linhas {start+1}–{end} de {total} "
-                    f"({remaining} linhas restantes). "
-                    f"Chama read_file novamente com start_line={end+1} para continuar."
+                    f"\n\n⚠️  TRUNCADO — {remaining} linhas restantes. "
+                    f"OBRIGATÓRIO: chama read_file novamente com start_line={end+1} "
+                    f"antes de concluir o que existe neste ficheiro."
                 )
             return content
         except Exception as e:
