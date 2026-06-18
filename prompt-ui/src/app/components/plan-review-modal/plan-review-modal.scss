@@ -76,6 +76,7 @@
   padding: 12px 14px;
   border-left: 3px solid var(--yellow);
   display: flex; flex-direction: column; gap: 6px;
+  &.excluded { opacity: .38; filter: grayscale(.5); }
 }
 
 .issue-header {

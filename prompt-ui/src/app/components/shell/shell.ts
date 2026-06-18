@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { SseService } from '../../services/sse';
 import { ApiService } from '../../services/api';
 import { Session, SessionRequest, SseMessage, ArchitecturePlanData } from '../../models';
+import { PlanApproval } from '../plan-review-modal/plan-review-modal';
 import { SetupModal } from '../setup-modal/setup-modal';
 import { PromptModal } from '../prompt-modal/prompt-modal';
 import { CommitModal } from '../commit-modal/commit-modal';
@@ -92,7 +93,8 @@ export class Shell implements OnInit, OnDestroy {
   };
 
   private _esc(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   private _renderCode(text: string, lang: string): string {
@@ -485,9 +487,9 @@ export class Shell implements OnInit, OnDestroy {
     if (data.error) this.addLine('Erro: ' + data.error, 'err');
   }
 
-  async onApprovePlan(approvedIndices: number[]) {
+  async onApprovePlan(approval: PlanApproval) {
     this.showPlanReview.set(false);
-    await this.api.approvePlan(approvedIndices);
+    await this.api.approvePlan(approval.changeIndices, approval.issueIndices ?? undefined);
   }
 
   async onRejectPlan(feedback: string) {

@@ -5,6 +5,11 @@ import { ArchitecturePlanData, PlanIssue } from '../../models';
 
 type Tab = 'plan' | 'issues' | 'changes';
 
+export interface PlanApproval {
+  changeIndices: number[];       // sorted list of approved change indices
+  issueIndices:  number[] | null; // sorted list of approved issue indices; null = all
+}
+
 @Component({
   selector: 'app-plan-review-modal',
   imports: [CommonModule, FormsModule],
@@ -14,7 +19,7 @@ type Tab = 'plan' | 'issues' | 'changes';
 export class PlanReviewModal implements OnInit {
   plan      = input.required<ArchitecturePlanData>();
   countdown = input<number>(600);
-  approve   = output<number[]>();
+  approve   = output<PlanApproval>();
   reject    = output<string>();
 
   tab          = signal<Tab>('plan');
@@ -24,8 +29,8 @@ export class PlanReviewModal implements OnInit {
   // Granular approval: set of change indices the user has checked (all checked by default)
   approvedSet = signal<Set<number>>(new Set());
 
-  // Initialise the set once the plan input is available.
-  // We use ngOnInit because inputs resolve before that lifecycle hook.
+  // Issue selection: set of issue indices the user wants the developer to fix
+  approvedIssueSet = signal<Set<number>>(new Set());
 
   countdownLabel = computed(() => {
     const s = this.countdown();
@@ -36,8 +41,10 @@ export class PlanReviewModal implements OnInit {
 
   ngOnInit() {
     this.approvedSet.set(new Set(this.plan().changes.map((_, i) => i)));
+    this.approvedIssueSet.set(new Set(this.plan().issues.map((_, i) => i)));
   }
 
+  // ── Changes ───────────────────────────────────────────────────────────────
   toggleChange(i: number) {
     this.approvedSet.update(s => {
       const next = new Set(s);
@@ -46,21 +53,42 @@ export class PlanReviewModal implements OnInit {
     });
   }
 
-  isApproved(i: number) { return this.approvedSet().has(i); }
+  isChangeApproved(i: number) { return this.approvedSet().has(i); }
 
   hasNoChanges  = computed(() => this.plan().changes.length === 0);
   noneSelected  = computed(() => this.plan().changes.length > 0 && this.approvedSet().size === 0);
   approveLabel  = computed(() => (this.hasNoChanges() || this.noneSelected()) ? 'Concluir' : 'Implementar');
   approveIcon   = computed(() => (this.hasNoChanges() || this.noneSelected()) ? 'check_circle' : 'rocket_launch');
 
-  toggleAll() {
+  toggleAllChanges() {
     const all = new Set(this.plan().changes.map((_, i) => i));
     this.approvedSet.update(s => s.size === all.size ? new Set() : all);
   }
 
+  // ── Issues ────────────────────────────────────────────────────────────────
+  toggleIssue(i: number) {
+    this.approvedIssueSet.update(s => {
+      const next = new Set(s);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  }
+
+  isIssueApproved(i: number) { return this.approvedIssueSet().has(i); }
+
+  toggleAllIssues() {
+    const all = new Set(this.plan().issues.map((_, i) => i));
+    this.approvedIssueSet.update(s => s.size === all.size ? new Set() : all);
+  }
+
+  // ── Approve / Reject ──────────────────────────────────────────────────────
   doApprove() {
-    const indices = [...this.approvedSet()].sort((a, b) => a - b);
-    this.approve.emit(indices);
+    const changeIndices = [...this.approvedSet()].sort((a, b) => a - b);
+    const totalIssues   = this.plan().issues.length;
+    const selectedIssues = [...this.approvedIssueSet()].sort((a, b) => a - b);
+    // Send null when all issues are selected (back-compat: backend passes them all through)
+    const issueIndices = selectedIssues.length === totalIssues ? null : selectedIssues;
+    this.approve.emit({ changeIndices, issueIndices });
   }
 
   doReject() {
@@ -88,6 +116,4 @@ export class PlanReviewModal implements OnInit {
         text: l,
       }));
   }
-
-
 }

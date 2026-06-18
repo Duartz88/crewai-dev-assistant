@@ -266,20 +266,28 @@ def _get_project_map(project_path: str) -> str:
 
 
 def _get_project_state(project_path: str) -> tuple[object, str]:
-    """Return (state, summary_text), cached by git-index mtime.
+    """Return (state, summary_text), cached by git-index mtime + dirty flag.
 
+    Invalidates when .git/index changes (staged files) OR when the working
+    tree has unstaged modifications, so the state stays accurate after any
+    tool writes a file even before the user runs git add.
     Returns (None, "") on error so callers can gracefully degrade.
     """
     from dev_studio.tools.project_state_tool import write_project_state, summarize_state
     global _state_cache
     mtime = _git_index_mtime(project_path)
-    if (_state_cache["path"] == project_path
-            and _state_cache["mtime"] == mtime
+    try:
+        dirty_flag = bool(run_git(["status", "--porcelain"], project_path).stdout.strip())
+    except Exception:
+        dirty_flag = False
+    cache_key = (project_path, mtime, dirty_flag)
+    if (_state_cache.get("key") == cache_key
             and _state_cache["state"] is not None):
         return _state_cache["state"], _state_cache["summary"]
     state   = write_project_state(project_path)
     summary = summarize_state(state)
-    _state_cache = {"path": project_path, "mtime": mtime, "state": state, "summary": summary}
+    _state_cache = {"key": cache_key, "path": project_path, "mtime": mtime,
+                    "state": state, "summary": summary}
     return state, summary
 
 
@@ -390,9 +398,29 @@ def _validate_and_clean(result: object, raw: str, agent_name: str) -> str:
 
 def _fix_json_escapes(s: str) -> str:
     """Fix invalid JSON backslash escapes produced by LLMs writing Windows paths.
-    Replaces \\X (where X is not a valid JSON escape character) with \\\\X."""
-    # Valid chars after a JSON backslash: " \\ / b f n r t u (and digits for \uXXXX)
-    return re.sub(r'\\(?!["\\/bfnrtux0-9])', r'\\\\', s)
+
+    Uses a state machine instead of a regex so it doesn't misfire on valid
+    escape sequences that coincidentally appear in Windows paths (e.g. \\t in
+    C:\\tests\\ would be touched by a naive negative-lookahead regex).
+
+    Valid JSON escapes after \\: " \\ / b f n r t u
+    Everything else gets doubled: \\X → \\\\X
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == '\\' and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt in '"\\/ bfnrtu':
+                result.append(ch)   # keep valid escape as-is
+            else:
+                result.append('\\\\')  # double the backslash
+            i += 1
+        else:
+            result.append(ch)
+        i += 1
+    return ''.join(result)
 
 
 def _recover_arch_json(exc: Exception) -> str | None:
@@ -438,21 +466,36 @@ def _pre_flight_warnings(project_path: str) -> list[str]:
     return warns
 
 
-def _trim_plan_for_developer(arch_raw: str, approved_indices: list[int] | None = None) -> str:
+def _trim_plan_for_developer(
+    arch_raw: str,
+    approved_indices: list[int] | None = None,
+    approved_issue_indices: list[int] | None = None,
+) -> str:
     """Strip the verbose `plan` markdown from architect JSON before sending to developer.
 
     The developer only needs changes, issues, endpoints_verified and files_read.
-    If approved_indices is not None, filter changes to only the approved subset.
+    - approved_indices: filter changes to only the approved subset (None = all)
+    - approved_issue_indices: filter issues to only the selected subset (None = all)
     Falls back to the original string if arch_raw is not valid JSON.
     """
     try:
         d = json.loads(arch_raw)
-        changes = d.get("changes", [])
+        all_changes = d.get("changes", [])
+        all_issues  = d.get("issues", [])
+
         if approved_indices is not None:
-            changes = [changes[i] for i in approved_indices if i < len(changes)]
+            changes = [all_changes[i] for i in approved_indices if i < len(all_changes)]
+        else:
+            changes = all_changes
+
+        if approved_issue_indices is not None:
+            issues = [all_issues[i] for i in approved_issue_indices if i < len(all_issues)]
+        else:
+            issues = all_issues
+
         return json.dumps({
             "files_read":         d.get("files_read", []),
-            "issues":             d.get("issues", []),
+            "issues":             issues,
             "changes":            changes,
             "endpoints_verified": d.get("endpoints_verified", []),
         }, ensure_ascii=False, indent=2)
@@ -1002,9 +1045,14 @@ def lm_status():
 
 
 # ── Full-flow plan approval state ─────────────────────────────────────────────
+# Using an Event + plain variable instead of a Queue eliminates the race where
+# a stale API call (e.g. double-click) could inject a second decision between
+# the queue.empty() drain loop and the blocking get(), silently overriding the
+# user's real choice.
 
-_plan_approval_event = threading.Event()
-_plan_approval_queue: queue.Queue = queue.Queue(maxsize=1)  # True=approved | str=feedback
+_plan_approval_event    = threading.Event()
+_plan_approval_decision: dict | None = None   # set atomically by approve/reject endpoints
+_plan_approval_lock     = threading.Lock()    # guards _plan_approval_decision writes
 _pending_plan_data: dict | None = None
 
 
@@ -1033,7 +1081,7 @@ def full_flow_endpoint():
     context_snapshot = _last_agent_output
 
     def _run():
-        global _last_agent_output, _last_agent_name, _pending_plan_data, _active_crew_thread
+        global _last_agent_output, _last_agent_name, _pending_plan_data, _active_crew_thread, _plan_approval_decision
         _active_crew_thread = threading.current_thread()
         from dev_studio.crew import DevStudioCrew
         project_path = session["project_path"]
@@ -1100,10 +1148,11 @@ def full_flow_endpoint():
                     }
 
             # ── Aguarda aprovação do plano ─────────────────────────────────────
+            # Reset event + decision before publishing the plan so any stale
+            # API call that fires between here and the wait() is dropped.
+            with _plan_approval_lock:
+                _plan_approval_decision = None
             _plan_approval_event.clear()
-            while not _plan_approval_queue.empty():
-                try: _plan_approval_queue.get_nowait()
-                except Exception: break
 
             _pending_plan_data = plan_dict
             capture.sse_queue.put({"type": "plan_ready", "plan": plan_dict, "num": req_num})
@@ -1127,10 +1176,9 @@ def full_flow_endpoint():
                 entry["status"] = "cancelled"
                 return
 
-            try:
-                decision = _plan_approval_queue.get_nowait()
-            except queue.Empty:
-                decision = {"approved": True, "indices": None}
+            with _plan_approval_lock:
+                decision = _plan_approval_decision or {"approved": True, "indices": None, "issue_indices": None}
+                _plan_approval_decision = None
 
             approved = decision.get("approved", False) if isinstance(decision, dict) else False
             if not approved:
@@ -1143,17 +1191,24 @@ def full_flow_endpoint():
 
             # ── Fase 2/3: Developer ────────────────────────────────────────────
             approved_indices: list[int] | None = decision.get("indices") if isinstance(decision, dict) else None
+            approved_issue_indices: list[int] | None = decision.get("issue_indices") if isinstance(decision, dict) else None
 
             # Determine the effective change list after granular filtering
             all_changes = plan_dict.get("changes", [])
+            all_issues  = plan_dict.get("issues",  [])
             if approved_indices is None:
                 effective_changes = all_changes
             else:
                 effective_changes = [all_changes[i] for i in approved_indices if i < len(all_changes)]
 
+            if approved_issue_indices is None:
+                effective_issues = all_issues
+            else:
+                effective_issues = [all_issues[i] for i in approved_issue_indices if i < len(all_issues)]
+
             # Nothing to implement: skip developer+reviewer and complete
-            if not effective_changes:
-                msg = "\n✅ Sem mudanças a implementar. Tarefa concluída pelo Arquitecto.\n"
+            if not effective_changes and not effective_issues:
+                msg = "\n✅ Sem mudanças ou issues a implementar. Tarefa concluída pelo Arquitecto.\n"
                 capture.sse_queue.put({"type": "output", "text": msg})
                 _last_agent_output = arch_raw
                 _last_agent_name = "full-flow"
@@ -1162,11 +1217,16 @@ def full_flow_endpoint():
                 capture.sse_queue.put({"type": "context_updated", "from_agent": "full-flow", "agent_label": "Fluxo Completo"})
                 return  # falls into finally block for cleanup
 
+            parts: list[str] = []
             if approved_indices is not None and len(effective_changes) < len(all_changes):
+                parts.append(f"{len(effective_changes)}/{len(all_changes)} mudanças")
+            if approved_issue_indices is not None and len(effective_issues) < len(all_issues):
+                parts.append(f"{len(effective_issues)}/{len(all_issues)} issues")
+            if parts:
                 capture.sse_queue.put({"type": "output", "text":
-                    f"ℹ️ Aprovação parcial: {len(effective_changes)}/{len(all_changes)} mudanças seleccionadas.\n"})
+                    f"ℹ️ Aprovação parcial: {', '.join(parts)} seleccionados.\n"})
 
-            arch_trimmed = _trim_plan_for_developer(arch_raw, approved_indices)
+            arch_trimmed = _trim_plan_for_developer(arch_raw, approved_indices, approved_issue_indices)
             dev_context = f"{project_map}\n\n{arch_trimmed}"
             capture.sse_queue.put({"type": "output", "text": "\nFase 2/3 — Developer a implementar...\n"})
             dev_result = crew.implement_crew().kickoff(inputs={
@@ -1255,6 +1315,8 @@ def full_flow_endpoint():
             capture._cancel_requested.clear()
             _active_crew_thread = None
             _pending_plan_data = None
+            with _plan_approval_lock:
+                _plan_approval_decision = None
             entry["elapsed"] = round(time.time() - start)
             with _session_lock:
                 session["running"] = False
@@ -1275,26 +1337,33 @@ def full_flow_endpoint():
 
 @app.route("/api/plan/approve", methods=["POST"])
 def plan_approve():
-    data = request.json or {}
-    approved_indices = data.get("approved_indices")  # None = approve all
-    try:
-        _plan_approval_queue.put_nowait({"approved": True, "indices": approved_indices})
-        _plan_approval_event.set()
-        return jsonify({"ok": True})
-    except queue.Full:
+    global _plan_approval_decision
+    if _pending_plan_data is None:
         return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
+    data = request.json or {}
+    approved_indices       = data.get("approved_indices")        # None = approve all changes
+    approved_issue_indices = data.get("approved_issue_indices")  # None = pass all issues
+    with _plan_approval_lock:
+        _plan_approval_decision = {
+            "approved":             True,
+            "indices":              approved_indices,
+            "issue_indices":        approved_issue_indices,
+        }
+    _plan_approval_event.set()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/plan/reject", methods=["POST"])
 def plan_reject():
+    global _plan_approval_decision
+    if _pending_plan_data is None:
+        return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
     data = request.json or {}
     feedback = (data.get("feedback") or "").strip()
-    try:
-        _plan_approval_queue.put_nowait({"approved": False, "feedback": feedback})
-        _plan_approval_event.set()
-        return jsonify({"ok": True})
-    except queue.Full:
-        return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
+    with _plan_approval_lock:
+        _plan_approval_decision = {"approved": False, "feedback": feedback}
+    _plan_approval_event.set()
+    return jsonify({"ok": True})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

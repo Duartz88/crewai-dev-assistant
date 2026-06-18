@@ -12,7 +12,7 @@
         </span>
         <span class="chip chip-issues">
           <span class="icon sm">warning</span>
-          {{ plan().issues.length }} problema(s)
+          {{ approvedIssueSet().size }}/{{ plan().issues.length }} problema(s)
         </span>
       </div>
     </div>
@@ -46,25 +46,34 @@
       <div class="tab-body">
         @if (plan().issues.length === 0) {
           <p class="empty-hint">Nenhum problema identificado.</p>
-        }
-        @for (issue of plan().issues; track $index) {
-          <div class="issue-card">
-            <div class="issue-header">
-              <span class="sev-badge" [class]="severityCls(issue.severity)">{{ issue.severity }}</span>
-              <span class="issue-file" title="{{ issue.file }}">{{ issue.file }}</span>
-              @if (issue.line) {
-                <span class="issue-line">linha {{ issue.line }}</span>
-              }
-            </div>
-            <div class="issue-desc">{{ issue.description }}</div>
-            @if (issue.snippet) {
-              <div class="snippet">
-                @for (ln of snippetLines(issue); track $index) {
-                  <div class="snip-line" [class]="ln.cls">{{ ln.text }}</div>
+        } @else {
+          <div class="changes-toolbar">
+            <span class="approved-count">{{ approvedIssueSet().size }}/{{ plan().issues.length }} para corrigir</span>
+            <button class="btn-toggle-all" (click)="toggleAllIssues()">
+              {{ approvedIssueSet().size === plan().issues.length ? 'Desmarcar tudo' : 'Marcar tudo' }}
+            </button>
+          </div>
+          @for (issue of plan().issues; track $index) {
+            <div class="issue-card" [class.excluded]="!isIssueApproved($index)">
+              <div class="issue-header">
+                <input type="checkbox" class="change-check" [checked]="isIssueApproved($index)"
+                       (change)="toggleIssue($index)" />
+                <span class="sev-badge" [class]="severityCls(issue.severity)">{{ issue.severity }}</span>
+                <span class="issue-file" title="{{ issue.file }}">{{ issue.file }}</span>
+                @if (issue.line) {
+                  <span class="issue-line">linha {{ issue.line }}</span>
                 }
               </div>
-            }
-          </div>
+              <div class="issue-desc">{{ issue.description }}</div>
+              @if (issue.snippet) {
+                <div class="snippet">
+                  @for (ln of snippetLines(issue); track $index) {
+                    <div class="snip-line" [class]="ln.cls">{{ ln.text }}</div>
+                  }
+                </div>
+              }
+            </div>
+          }
         }
       </div>
     }
@@ -77,14 +86,14 @@
         } @else {
           <div class="changes-toolbar">
             <span class="approved-count">{{ approvedSet().size }}/{{ plan().changes.length }} seleccionados</span>
-            <button class="btn-toggle-all" (click)="toggleAll()">
+            <button class="btn-toggle-all" (click)="toggleAllChanges()">
               {{ approvedSet().size === plan().changes.length ? 'Desmarcar tudo' : 'Marcar tudo' }}
             </button>
           </div>
           @for (ch of plan().changes; track $index) {
-            <div class="change-card" [class.excluded]="!isApproved($index)">
+            <div class="change-card" [class.excluded]="!isChangeApproved($index)">
               <div class="change-header">
-                <input type="checkbox" class="change-check" [checked]="isApproved($index)"
+                <input type="checkbox" class="change-check" [checked]="isChangeApproved($index)"
                        (change)="toggleChange($index)" />
                 <span class="action-badge" [class]="ch.action === 'create' ? 'act-create' : 'act-modify'">
                   <span class="icon sm">{{ ch.action === 'create' ? 'add_circle' : 'edit' }}</span>
