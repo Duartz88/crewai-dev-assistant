@@ -21,6 +21,11 @@ from dev_studio.models import ArchitecturePlan, ImplementationResult, ReviewResu
 
 from dev_studio.utils.settings import load_settings as _load_settings  # noqa: E402
 
+from crewai_tools import TavilySearchTool
+
+_TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "")
+tavily_tool = TavilySearchTool(api_key=_TAVILY_KEY, max_results=3) if _TAVILY_KEY else None
+
 
 def _build_llms() -> tuple:
     """Build LLM instances from current settings (re-read on every crew instantiation)."""
@@ -29,9 +34,9 @@ def _build_llms() -> tuple:
     key   = s["lm_api_key"]
     model = s["model_name"] or "default"
     return (
-        LLM(model=model, base_url=url, api_key=key, temperature=0.4,  extra_body={"enable_thinking": True}),   # type: ignore[call-overload]
+        LLM(model=model, base_url=url, api_key=key, temperature=0.4,  extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
         LLM(model=model, base_url=url, api_key=key, temperature=0.15, extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
-        LLM(model=model, base_url=url, api_key=key, temperature=0.35, extra_body={"enable_thinking": True}),   # type: ignore[call-overload]
+        LLM(model=model, base_url=url, api_key=key, temperature=0.35, extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
     )
 
 dir_tool     = SmartDirectoryTool()
@@ -93,6 +98,7 @@ class DevStudioCrew:
                 grep_tool, compare_tool,          # cross-project analysis
                 self._ep_verify,                  # verify API endpoints before plan
                 ps_validator,                     # syntax check (PS1/PSM1)
+                *([tavily_tool] if tavily_tool else []),  # web search (Tavily) — optional
             ],
             verbose=True,
             max_iter=15,

@@ -90,8 +90,13 @@ _TS_SELECTOR = re.compile(r"selector\s*:\s*['\"]([^'\"]+)['\"]")
 _TS_IFACE    = re.compile(r'\binterface\s+(\w+)')
 _TS_METHOD   = re.compile(r'^\s{2,}(?:async\s+)?([a-zA-Z]\w*)\s*\([^)]*\)\s*(?::\s*\S+)?\s*\{', re.MULTILINE)
 _TS_HTTP     = re.compile(r'this\.(?:http|_http)\.\w+\s*\(\s*[`\'"]([^`\'"]+)[`\'"]', re.IGNORECASE)
-_TS_COMP     = re.compile(r'@Component\b')
-_TS_SVC      = re.compile(r'@Injectable\b')
+_TS_COMP          = re.compile(r'@Component\b')
+_TS_SVC           = re.compile(r'@Injectable\b')
+_TS_FUNC_COMP     = re.compile(r'export\s+default\s+function\s+([A-Z]\w+)\s*\(')
+_TS_EXPORT_SVC    = re.compile(
+    r'^export\s+const\s+(\w+(?:Api|Service|Client|Provider|Repository))\s*[=:]',
+    re.MULTILINE,
+)
 
 
 def _scan_typescript(path: str) -> dict:
@@ -102,18 +107,30 @@ def _scan_typescript(path: str) -> dict:
     except Exception:
         return info
 
-    is_comp = bool(_TS_COMP.search(content))
-    is_svc  = bool(_TS_SVC.search(content))
+    is_angular_comp = bool(_TS_COMP.search(content))
+    is_angular_svc  = bool(_TS_SVC.search(content))
     sel_m   = _TS_SELECTOR.search(content)
     selector = sel_m.group(1) if sel_m else ""
 
     for m in _TS_CLASS.finditer(content):
         info["classes"].append({
             "name": m.group(1),
-            "is_component": is_comp,
-            "is_service": is_svc,
-            "selector": selector if is_comp else "",
+            "is_component": is_angular_comp,
+            "is_service": is_angular_svc,
+            "selector": selector if is_angular_comp else "",
         })
+
+    # React functional components: export default function ComponentName(
+    for m in _TS_FUNC_COMP.finditer(content):
+        name = m.group(1)
+        if not any(c["name"] == name for c in info["classes"]):
+            info["classes"].append({"name": name, "is_component": True, "is_service": False, "selector": ""})
+
+    # Exported service objects: export const pointsApi = { ... }
+    for m in _TS_EXPORT_SVC.finditer(content):
+        name = m.group(1)
+        if not any(c["name"] == name for c in info["classes"]):
+            info["classes"].append({"name": name, "is_component": False, "is_service": True, "selector": ""})
 
     info["interfaces"] = [m.group(1) for m in _TS_IFACE.finditer(content)]
     info["http_calls"]  = list(dict.fromkeys(m.group(1) for m in _TS_HTTP.finditer(content)))

@@ -2,6 +2,13 @@ import ctypes
 import json
 import logging
 import os
+
+# Load .env before anything else (no-op if file doesn't exist)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+except ImportError:
+    pass
 import queue
 import re
 import sys
@@ -344,9 +351,10 @@ def _validate_and_clean(result: object, raw: str, agent_name: str) -> str:
             return raw
 
         if isinstance(pydantic_out, ArchitecturePlan):
-            if not pydantic_out.files_read:
+            if pydantic_out.changes and not pydantic_out.files_read:
+                # Only flag if the architect proposed changes without reading files
                 capture.sse_queue.put({"type": "output", "text":
-                    "\n⛔ VALIDAÇÃO: Arquitecto não leu nenhum ficheiro (files_read vazio)."
+                    "\n⛔ VALIDAÇÃO: Arquitecto propôs alterações sem ler nenhum ficheiro (files_read vazio)."
                     " O plano pode ser baseado em suposições.\n"})
             no_proof = [i for i in pydantic_out.issues if not i.snippet]
             if no_proof:

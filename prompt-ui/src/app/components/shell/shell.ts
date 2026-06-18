@@ -437,7 +437,11 @@ export class Shell implements OnInit, OnDestroy {
     if (l.includes('agent:') || l.includes('arquiteto') || l.includes('programador') || l.includes('revisor')) return 'agent';
     if (l.includes('action:') || l.includes('using tool') || l.includes('→')) return 'tool';
     if (l.includes('aprovado') || l.includes('concluido') || l.includes('sucesso')) return 'ok';
-    if (l.includes('erro') || l.includes('error') || l.includes('failed') || l.includes('falhou')) return 'err';
+    // Only flag as error when the line IS an error message, not when it merely mentions the word.
+    // Matches: lines starting with ❌ / Error: / ERRO: / [ERROR] / Traceback / "error": (JSON)
+    if (/^(❌|error:|erro:|erros?:|traceback|\[error\]|exception:|failed:)/i.test(t)
+        || /^\s*"error"\s*:/i.test(l)
+        || t.startsWith('Falhou') || t.startsWith('failed')) return 'err';
     if (l.includes('warn') || l.includes('aviso') || l.includes('aguarda')) return 'warn';
     if (t.startsWith('-') || t.startsWith('*')) return 'list';
     return '';
