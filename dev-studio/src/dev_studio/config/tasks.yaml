@@ -176,80 +176,50 @@ design_task:
 
 implement_task:
   description: >
-    <plano_aprovado>
+    <plano>
     {context}
-    </plano_aprovado>
+    </plano>
 
-    <pedido>
-    {request}
-    </pedido>
-
+    <pedido>{request}</pedido>
     <projeto>{project_path}</projeto>
 
-    O <plano_aprovado> é um JSON com os campos: files_read, issues, changes, endpoints_verified, plan.
-    Lê o campo "changes" para saber quais ficheiros criar/modificar e onde.
-    Lê o campo "issues" para os problemas concretos a corrigir (com file+line+snippet).
-    Lê o campo "plan" para o plano detalhado com trechos de código.
-    Lê o campo "endpoints_verified" para os endpoints já confirmados que podes usar.
+    O <plano> é um JSON com: "issues" (problemas + snippets), "changes" (ficheiros a modificar), "plan" (blocos ANTES/DEPOIS em markdown).
 
-    O PROJECT MAP está incluído no contexto. PROIBIDO criar rotas ou classes que já constem
-    no PROJECT MAP (a não ser que o plano diga explicitamente para as modificar).
+    ⚡ VIA RÁPIDA — usa SEMPRE que o campo "plan" tiver blocos ANTES/DEPOIS:
+    Para cada correcção no campo "plan":
+    1. Identifica o ficheiro-alvo em changes[].path ou issues[].file
+    2. Usa patch_file com:
+       - old_snippet = bloco ANTES (código actual, copia exactamente)
+       - new_snippet = bloco DEPOIS (código correcto, copia exactamente)
+    3. Se patch_file retornar "não encontrado": ENTÃO lê o ficheiro com read_file, localiza o trecho, tenta de novo
+    4. Se patch_file retornar BLOQUEADO: corrige new_snippet e repete
 
-    Implementa o pedido seguindo o plano/contexto acima. Para cada ficheiro, segue estes passos:
+    🐌 VIA LENTA — usa APENAS quando NÃO há blocos ANTES/DEPOIS no campo "plan":
+    1. Lê o ficheiro com read_file (usa start_line se souberes a linha)
+    2. Copia o trecho exacto para old_snippet (com 2-3 linhas de contexto)
+    3. Usa patch_file
 
-    PARA CADA FICHEIRO A CRIAR (novo, não existe):
-    1. Se for .py: valida com validate_python_syntax antes de escrever
-    2. Se for .ts/.tsx: valida com validate_typescript (com AMBOS os argumentos: filename E content)
-    3. Usa write_file para criar o ficheiro
+    PARA FICHEIROS NOVOS (action = "create"):
+    - Usa write_file para criar o ficheiro
+    - Se .py: valida com validate_python_syntax primeiro
+    - Se .ts/.tsx: valida com validate_typescript (filename + content)
 
-    PARA FICHEIROS DE SERVIÇO/API (api.ts, services/*.ts, *.service.ts):
-    1. Lê o ficheiro com read_file para ver os métodos que já existem
-    2. Para cada método NOVO que o plano pede para adicionar:
-       - Chama mark_endpoint_verified para confirmar que o endpoint backend existe
-       - Se ❌: não adiciones o método — informa que o endpoint não existe
-    3. Se o plano menciona um método que já existe no ficheiro → não o reescrevas
-
-    PARA CADA FICHEIRO A MODIFICAR (já existe):
-    1. Lê o conteúdo COMPLETO com read_file
-    2. RACIOCÍNIO OBRIGATÓRIO — antes de qualquer patch, escreve em texto:
-       a) "Localização: linha ~N, função/componente X"
-       b) "Código actual: [copia literalmente do read_file]"
-       c) "Vou alterar para: [o novo código]"
-       Se não identificas a localização exacta com base no plano, PARA e relê o plano.
-       Não patches por adivinhação.
-    3. ATENÇÃO — UI vs dados (erro comum):
-       - Alterações de UI (Angular, React ou framework equivalente): procura o componente
-         que RENDERIZA o elemento — (click), onClick, ng-click, etc. — NÃO a função de carregamento
-       - Alterações de dados/API: procura a função que chama o endpoint
-       Nunca confundas rendering com data loading.
-    4. Usa patch_file com:
-       - old_snippet: copiado LITERALMENTE do read_file, com 2-3 linhas de contexto
-       - new_snippet: o mesmo trecho com APENAS as linhas alteradas
-    5. Se patch_file retornar "não encontrado": volta ao read_file, copia de novo, repete
-    6. Se patch_file retornar BLOQUEADO: corrige new_snippet antes de tentar outra vez
+    PARA FICHEIROS DE SERVIÇO/API (api.ts, services/*.ts):
+    - Lê o ficheiro com read_file para ver métodos existentes antes de adicionar novos
 
     PROIBIDO:
     - Usar write_file em ficheiros que já existem — usa patch_file
-    - Reescrever o ficheiro inteiro quando só 1-2 funções precisam de mudar
-    - Reconstruir código de memória — copia SEMPRE do read_file
-    - Criar ficheiros que não estejam no plano
-    - Patchar uma função diferente da identificada no plano do arquitecto
+    - Ler o ficheiro completo quando o "plan" já tem ANTES/DEPOIS — é desperdício de contexto
+    - Reconstruir código de memória — copia sempre do plano ou do read_file
+    - Criar ficheiros não incluídos em changes
 
-    NO FINAL:
-    Usa write_project_memory para registar as decisões de implementação mais importantes.
+    NO FINAL: usa write_project_memory para registar decisões importantes.
 
-    OUTPUT OBRIGATÓRIO — JSON:
-    O teu "Final Answer" DEVE ser um objecto JSON válido com exactamente estes campos:
-    - "files_modified": lista de caminhos absolutos dos ficheiros modificados com patch_file
-    - "files_created": lista de caminhos absolutos dos ficheiros criados com write_file
-    - "syntax_errors": lista de erros de sintaxe encontrados {file, line, description, snippet}
-    - "summary": resumo em português com blocos ANTES/DEPOIS para cada alteração
-
-    Não escrevas markdown fora do JSON. Coloca tudo dentro do campo "summary".
+    OUTPUT — JSON obrigatório com estes campos:
+    {"files_modified": [...caminhos absolutos...], "files_created": [...], "syntax_errors": [{file, line, description, snippet}], "summary": "...markdown..."}
+    Não escrevas nada fora do JSON.
   expected_output: >
-    JSON com campos: files_modified (paths modificados), files_created (paths criados),
-    syntax_errors (erros encontrados com evidência), e summary (resumo em markdown português
-    com blocos ANTES/DEPOIS para cada ficheiro alterado).
+    JSON: files_modified, files_created, syntax_errors, summary (markdown PT com ANTES/DEPOIS).
   agent: developer
 
 fix_task:
@@ -258,37 +228,32 @@ fix_task:
     {context}
     </problemas_a_corrigir>
 
-    <pedido>
-    {request}
-    </pedido>
-
+    <pedido>{request}</pedido>
     <projeto>{project_path}</projeto>
 
-    O Reviewer identificou os problemas no contexto acima. Corrige APENAS esses problemas.
+    O Reviewer identificou os problemas acima. Corrige APENAS esses problemas.
 
-    Para cada problema listado:
-    1. Lê o ficheiro actual com read_file
-    2. Identifica o trecho MÍNIMO que contém o problema
-    3. Usa patch_file com old_snippet copiado LITERALMENTE do read_file e new_snippet corrigido
-    4. Se patch_file retornar BLOQUEADO (sintaxe): corrige new_snippet
-    5. Se patch_file retornar "não encontrado": relê o ficheiro, copia de novo
+    Para cada problema, usa a VIA MAIS RÁPIDA disponível:
+
+    ⚡ Se o issue tem "snippet" com o código problemático:
+    1. Usa patch_file com old_snippet = código do snippet e new_snippet = versão corrigida
+    2. Se patch_file retornar "não encontrado": ENTÃO lê com read_file e tenta de novo
+
+    🐌 Se não há snippet suficiente:
+    1. Lê o ficheiro com read_file (usa start_line se souberes a linha)
+    2. Copia old_snippet literalmente, escreve new_snippet corrigido
+    3. Usa patch_file
 
     PROIBIDO:
-    - Usar write_file em ficheiros que já existem — usa patch_file
+    - Usar write_file em ficheiros existentes — usa patch_file
     - Corrigir mais do que os problemas listados pelo Reviewer
-    - Reconstruir código de memória — copia SEMPRE do read_file
+    - Ler o ficheiro inteiro quando o snippet já é suficiente
 
-    OUTPUT OBRIGATÓRIO — JSON:
-    O teu "Final Answer" DEVE ser um objecto JSON válido com exactamente estes campos:
-    - "files_modified": lista de caminhos absolutos dos ficheiros modificados com patch_file
-    - "files_created": lista de caminhos absolutos dos ficheiros criados com write_file
-    - "syntax_errors": lista de erros de sintaxe encontrados {file, line, description, snippet}
-    - "summary": para cada problema: estado (Resolvido/Parcial), ANTES e DEPOIS do código
-
-    Não escrevas markdown fora do JSON. Coloca tudo dentro do campo "summary".
+    OUTPUT — JSON obrigatório:
+    {"files_modified": [...], "files_created": [...], "syntax_errors": [{file, line, description, snippet}], "summary": "...estado de cada correcção com ANTES/DEPOIS..."}
+    Não escrevas nada fora do JSON.
   expected_output: >
-    JSON com campos: files_modified, files_created, syntax_errors, e summary (markdown português
-    com estado de cada correcção e blocos ANTES/DEPOIS).
+    JSON: files_modified, files_created, syntax_errors, summary (markdown PT com estado e ANTES/DEPOIS).
   agent: developer
 
 review_task:

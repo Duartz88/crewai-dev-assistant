@@ -498,11 +498,18 @@ def _trim_plan_for_developer(
     approved_indices: list[int] | None = None,
     approved_issue_indices: list[int] | None = None,
 ) -> str:
-    """Strip the verbose `plan` markdown from architect JSON before sending to developer.
+    """Build the minimal context for the Developer agent.
 
-    The developer only needs changes, issues, endpoints_verified and files_read.
-    - approved_indices: filter changes to only the approved subset (None = all)
-    - approved_issue_indices: filter issues to only the selected subset (None = all)
+    Keeps only what the Developer actually needs:
+    - issues (with snippets — the Developer uses these for fast patch_file)
+    - changes (file paths and actions)
+    - plan (ANTES/DEPOIS markdown — allows patch_file without read_file first)
+
+    Drops files_read and endpoints_verified — the Developer never uses them and
+    they inflate the context window significantly.
+
+    approved_indices: filter changes to only the approved subset (None = all)
+    approved_issue_indices: filter issues to only the selected subset (None = all)
     Falls back to the original string if arch_raw is not valid JSON.
     """
     try:
@@ -510,21 +517,16 @@ def _trim_plan_for_developer(
         all_changes = d.get("changes", [])
         all_issues  = d.get("issues", [])
 
-        if approved_indices is not None:
-            changes = [all_changes[i] for i in approved_indices if i < len(all_changes)]
-        else:
-            changes = all_changes
+        changes = ([all_changes[i] for i in approved_indices if i < len(all_changes)]
+                   if approved_indices is not None else all_changes)
 
-        if approved_issue_indices is not None:
-            issues = [all_issues[i] for i in approved_issue_indices if i < len(all_issues)]
-        else:
-            issues = all_issues
+        issues  = ([all_issues[i]  for i in approved_issue_indices if i < len(all_issues)]
+                   if approved_issue_indices is not None else all_issues)
 
         return json.dumps({
-            "files_read":         d.get("files_read", []),
-            "issues":             issues,
-            "changes":            changes,
-            "endpoints_verified": d.get("endpoints_verified", []),
+            "issues":  issues,
+            "changes": changes,
+            "plan":    d.get("plan", ""),  # ANTES/DEPOIS blocks let Developer skip read_file
         }, ensure_ascii=False, indent=2)
     except Exception:
         return arch_raw
@@ -1257,7 +1259,10 @@ def full_flow_endpoint():
                     f"ℹ️ Aprovação parcial: {', '.join(parts)} seleccionados.\n"})
 
             arch_trimmed = _trim_plan_for_developer(arch_raw, approved_indices, approved_issue_indices)
-            dev_context = f"{project_map}\n\n{arch_trimmed}"
+            # Developer gets the plan JSON only — it has exact file paths in changes[].path
+            # and ANTES/DEPOIS blocks in plan, so it doesn't need the full project map.
+            # Skipping the project map reduces the Developer's input tokens significantly.
+            dev_context = arch_trimmed
             capture.sse_queue.put({"type": "output", "text": "\nFase 2/3 — Developer a implementar...\n"})
             dev_result = crew.implement_crew().kickoff(inputs={
                 "request": user_request,
