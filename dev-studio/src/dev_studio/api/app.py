@@ -78,6 +78,33 @@ def _lm_ping() -> tuple[bool, str | None]:
         return False, f"Erro ao verificar LM Studio: {e}"
     return True, None
 
+
+def _lm_keepalive() -> None:
+    """Fire-and-forget 1-token inference to prevent LM Studio from auto-unloading the model.
+    Called in a background thread during plan approval wait so the idle timer never fires."""
+    try:
+        from dev_studio.utils.settings import load_settings
+        s = load_settings()
+        payload = json.dumps({
+            "model": s["model_name"] or "default",
+            "messages": [{"role": "user", "content": "."}],
+            "max_tokens": 1,
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"{s['lm_base_url']}/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {s['lm_api_key']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=20)
+    except Exception:
+        pass  # non-fatal — next tick will retry
+
+
 _SESSION_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".crew_session.json")
 _HISTORY_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".crew_history.json")
 _session_lock = threading.Lock()
@@ -1159,6 +1186,8 @@ def full_flow_endpoint():
 
             # Wait for user approval in 30-second ticks, emitting a countdown event
             # each tick so the frontend can show remaining time in the modal.
+            # A keepalive inference (1 token) is fired on each tick to prevent
+            # LM Studio from auto-unloading the model while the user reviews the plan.
             _APPROVAL_TIMEOUT = 600
             _TICK = 30
             elapsed_wait = 0
@@ -1170,6 +1199,7 @@ def full_flow_endpoint():
                 elapsed_wait += _TICK
                 remaining = _APPROVAL_TIMEOUT - elapsed_wait
                 capture.sse_queue.put({"type": "plan_countdown", "remaining": remaining})
+                threading.Thread(target=_lm_keepalive, daemon=True).start()
 
             if not got_response:
                 capture.sse_queue.put({"type": "output", "text": "\nTempo esgotado a aguardar aprovação.\n"})
