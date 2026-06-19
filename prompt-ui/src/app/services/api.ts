@@ -71,10 +71,10 @@ export class ApiService {
   }
 
   getSettings() {
-    return firstValueFrom(this.http.get<{ lm_base_url: string; lm_api_key: string; model_name: string }>('/api/settings'));
+    return firstValueFrom(this.http.get<{ lm_base_url: string; lm_api_key: string; model_name: string; tavily_api_key: string }>('/api/settings'));
   }
 
-  saveSettings(data: { lm_base_url: string; lm_api_key: string; model_name: string }) {
+  saveSettings(data: { lm_base_url: string; lm_api_key: string; model_name: string; tavily_api_key: string }) {
     return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/settings', data));
   }
 

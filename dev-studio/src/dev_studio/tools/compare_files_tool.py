@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 
 
 class CompareInput(BaseModel):
-    file_a: str = Field(description="Path to the reference file (e.g. the working version)")
-    file_b: str = Field(description="Path to the file to compare against the reference")
-    context_lines: int = Field(default=5, description="Lines of context around each difference")
+    file_a: str = Field(description="Path to the reference file (the correct/working version)")
+    file_b: str = Field(description="Path to the file to compare (the file to fix — from the current project)")
+    context_lines: int = Field(default=2, description="Lines of context around each difference. Keep at 2 to save context window.")
 
 
 class CompareFilesTool(BaseTool):
@@ -48,17 +48,20 @@ class CompareFilesTool(BaseTool):
         if not diff:
             return f"Ficheiros idênticos: '{os.path.basename(file_a)}' == '{os.path.basename(file_b)}'"
 
-        MAX_LINES = 600
+        MAX_LINES = 400
+        n_changes = sum(1 for l in diff if l.startswith(('+', '-')) and not l.startswith(('---', '+++')))
         header = (
-            f"DIFF: {os.path.basename(file_a)} vs {os.path.basename(file_b)}\n"
-            f"Total de diferenças: {sum(1 for l in diff if l.startswith(('+', '-')) and not l.startswith(('---', '+++')))} linhas\n"
+            f"DIFF: {os.path.basename(file_a)} (referência/A) vs {os.path.basename(file_b)} (actual/B)\n"
+            f"LEGENDA: linhas '-' = só na REFERÊNCIA (patch_after) | linhas '+' = só no ACTUAL (snippet)\n"
+            f"IMPORTANTE: copia as linhas VERBATIM do diff — não reescreves de memória.\n"
+            f"Total de diferenças: {n_changes} linhas\n"
             f"{'=' * 60}\n"
         )
 
         body = "".join(diff[:MAX_LINES])
         suffix = (
-            f"\n... (truncado — {len(diff)} linhas de diff total. "
-            "Usa context_lines=2 para ver mais diferenças de uma vez.)"
+            f"\n... (truncado — {len(diff)} linhas total. "
+            "Aumenta context_lines=1 ou usa grep_in_files para ver secções específicas.)"
             if len(diff) > MAX_LINES else ""
         )
 

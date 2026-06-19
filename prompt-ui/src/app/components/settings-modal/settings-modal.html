@@ -2,7 +2,7 @@
   <div class="box">
     <div class="modal-header">
       <span class="icon sm">tune</span>
-      <span class="modal-title">Definições LM Studio</span>
+      <span class="modal-title">Definições</span>
       <button class="close-btn" (click)="close.emit()">
         <span class="icon sm">close</span>
       </button>
@@ -15,7 +15,7 @@
              placeholder="http://localhost:1234/v1" />
       <span class="field-hint">Porta padrão do LM Studio: 1234</span>
 
-      <label class="field-label">API Key</label>
+      <label class="field-label">API Key (LM Studio)</label>
       <input class="field-input" type="password" [value]="lmApiKey()"
              (input)="lmApiKey.set($any($event.target).value)"
              placeholder="lm-studio" />
@@ -26,6 +26,15 @@
              (input)="modelName.set($any($event.target).value)"
              placeholder="ex: Qwopus3.6-27B-Coder-MTP-GGUF" />
       <span class="field-hint">Nome exacto do modelo carregado em LM Studio</span>
+
+      <label class="field-label">Tavily API Key</label>
+      <input class="field-input" type="password" [value]="tavilyApiKey()"
+             (input)="tavilyApiKey.set($any($event.target).value)"
+             placeholder="tvly-xxxxxxxxxxxxxxxxxxxxxxxx" />
+      <span class="field-hint">
+        Opcional — habilita pesquisa web nos agentes.
+        Chave em <strong>tavily.com</strong> → API Keys.
+      </span>
 
       @if (error()) {
         <span class="err-msg">{{ error() }}</span>

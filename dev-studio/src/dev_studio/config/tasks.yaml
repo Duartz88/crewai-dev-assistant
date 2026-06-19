@@ -53,7 +53,8 @@ design_task:
     2. Lê o diff LINHA A LINHA e cria um item em "issues" por cada grupo de diferenças:
        - Linhas com '-' existem apenas na referência (versão correcta)
        - Linhas com '+' existem apenas no ficheiro actual (o que está errado)
-       - Para cada diferença: snippet com a linha '-' (referência) e a linha '+' (actual)
+       - snippet = linhas '+' SEM o prefixo '+' (código exacto como está no ficheiro actual — old_snippet para patch)
+       - patch_after = linhas '-' SEM o prefixo '-' (código correcto da referência — new_snippet para patch)
     3. REGRA DE GRANULARIDADE: cada bloco @@ do diff é um grupo de diferenças → um issue.
        Não agregar todos os problemas num único issue — cada @@ separado = issue separado.
        Um diff com 5 blocos @@ deve gerar pelo menos 5 issues.
@@ -122,7 +123,9 @@ design_task:
     Só depois produz o plano com base em TUDO o que leste.
     Para tarefas de comparação: para cada issue, inclui no "plan" um bloco ANTES/DEPOIS:
     - ANTES = código ERRADO no ficheiro actual (linhas '+' do diff — o que está a corrigir)
+      → Igual ao campo "snippet" do issue
     - DEPOIS = código CORRECTO após a correcção (baseado nas linhas '-' da referência)
+      → Igual ao campo "patch_after" do issue
     Nunca inverteres a ordem: ANTES mostra o problema, DEPOIS mostra a solução.
     Copia do diff — não inventes código.
 
@@ -157,9 +160,17 @@ design_task:
     - "files_read": paths dos ficheiros do PROJECTO ACTUAL que leste ou comparaste.
       NÃO incluis ficheiros de referência externos. OBRIGATÓRIO — vazio = rejeitado.
     - "issues": um item por bloco de diferenças (@@ do diff) ou por erro de sintaxe.
-      Cada item: {file, line, description, snippet, severity}.
-      snippet = linhas '+' do diff (código problemático no ficheiro actual) mais linhas '-'
-      (da referência, para contexto). As '+' mostram o que está errado; as '-' o correcto.
+      Cada item: {file, line, description, snippet, patch_after, severity}.
+      file = caminho ABSOLUTO completo do ficheiro no disco.
+             REGRA: {project_path} + subpasta_do_pacote + caminho_relativo.
+             Exemplo: se project_path="C:\\proj\\" e o PROJECT MAP mostra "pkg\\tools\\file.ps1",
+             então file="C:\\proj\\pkg\\tools\\file.ps1" — NUNCA "C:\\proj\\tools\\file.ps1".
+             Verifica SEMPRE copiando o path de um read_file bem-sucedido, não de memória.
+      snippet = código exacto como está no ficheiro actual (linhas '+' do diff SEM o prefixo '+').
+               É o old_snippet para patch — deve ser verbatim, sem marcadores de diff.
+      patch_after = código correcto após a correcção (linhas '-' do diff SEM o prefixo '-').
+                    É o new_snippet para patch — verbatim, sem marcadores de diff.
+                    Deixa "" APENAS para erros de sintaxe sem solução directa da referência.
       Issue sem snippet = inválido. Não agregar múltiplas diferenças num único issue.
     - "changes": ficheiros do projecto a modificar, um por ficheiro. {path, action, reason, location}
     - "endpoints_verified": endpoints verificados (vazio [] se não aplicável)
@@ -169,9 +180,10 @@ design_task:
     Fora do JSON não podes escrever absolutamente nada.
   expected_output: >
     JSON com campos: files_read (paths dos ficheiros lidos), issues (problemas com evidência
-    file+line+snippet), changes (ficheiros a criar/modificar com localização), endpoints_verified,
-    e plan (plano completo em markdown português com blocos ANTES/DEPOIS).
+    file+line+snippet+patch_after), changes (ficheiros a criar/modificar com localização),
+    endpoints_verified, e plan (plano completo em markdown português com blocos ANTES/DEPOIS).
     files_read vazio = plano inválido. Issue sem snippet = issue inválido.
+    patch_after vazio em tarefas de comparação = informação incompleta.
   agent: architect
 
 implement_task:
@@ -186,18 +198,25 @@ implement_task:
     O <plano> é um JSON com: "issues" (problemas + snippets), "changes" (ficheiros a modificar), "plan" (blocos ANTES/DEPOIS em markdown).
 
     ⚡ VIA RÁPIDA — usa SEMPRE que o campo "plan" tiver blocos ANTES/DEPOIS:
-    Para cada correcção no campo "plan":
-    1. Identifica o ficheiro-alvo em changes[].path ou issues[].file
-    2. Usa patch_file com:
-       - old_snippet = bloco ANTES (código actual, copia exactamente)
-       - new_snippet = bloco DEPOIS (código correcto, copia exactamente)
-    3. Se patch_file retornar "não encontrado": ENTÃO lê o ficheiro com read_file, localiza o trecho, tenta de novo
-    4. Se patch_file retornar BLOQUEADO: corrige new_snippet e repete
+
+    📦 MODO BATCH — quando há MÚLTIPLAS correcções no MESMO ficheiro (≥2 issues para o mesmo path):
+    1. Agrupa TODAS as correcções desse ficheiro numa única chamada a patch_file_multi:
+       - filename = caminho absoluto do ficheiro
+       - patches = lista de {old_snippet, new_snippet} para CADA correcção do ficheiro
+    2. patch_file_multi aplica todas as alterações de uma vez e só escreve o ficheiro no final
+    3. Se algum old_snippet falhar, nenhuma alteração é aplicada — corrige e repete
+    → Um ficheiro com 5 correcções = 1 chamada patch_file_multi, NÃO 5 chamadas patch_file
+
+    🔧 MODO SINGLE — quando há apenas 1 correcção num ficheiro:
+    1. Usa patch_file com old_snippet = bloco ANTES e new_snippet = bloco DEPOIS
+    2. Se patch_file retornar "não encontrado": ENTÃO lê com read_file e tenta de novo
+    3. Se patch_file retornar BLOQUEADO: corrige new_snippet e repete
 
     🐌 VIA LENTA — usa APENAS quando NÃO há blocos ANTES/DEPOIS no campo "plan":
     1. Lê o ficheiro com read_file (usa start_line se souberes a linha)
     2. Copia o trecho exacto para old_snippet (com 2-3 linhas de contexto)
-    3. Usa patch_file
+    3. Para múltiplas correcções no mesmo ficheiro: usa patch_file_multi
+    4. Para uma única correcção: usa patch_file
 
     PARA FICHEIROS NOVOS (action = "create"):
     - Usa write_file para criar o ficheiro
@@ -235,14 +254,22 @@ fix_task:
 
     Para cada problema, usa a VIA MAIS RÁPIDA disponível:
 
-    ⚡ Se o issue tem "snippet" com o código problemático:
+    📦 MODO BATCH — quando há MÚLTIPLAS correcções no MESMO ficheiro (≥2 issues para o mesmo path):
+    1. Agrupa TODAS as correcções desse ficheiro numa única chamada a patch_file_multi:
+       - filename = caminho absoluto do ficheiro
+       - patches = lista de {old_snippet, new_snippet} com os snippets dos issues
+    2. Se algum old_snippet falhar, nenhuma alteração é escrita — corrige e repete
+    → Um ficheiro com 5 correcções = 1 chamada patch_file_multi, NÃO 5 chamadas patch_file
+
+    ⚡ MODO SINGLE — se há apenas 1 correcção num ficheiro E o issue tem "snippet":
     1. Usa patch_file com old_snippet = código do snippet e new_snippet = versão corrigida
     2. Se patch_file retornar "não encontrado": ENTÃO lê com read_file e tenta de novo
 
     🐌 Se não há snippet suficiente:
     1. Lê o ficheiro com read_file (usa start_line se souberes a linha)
     2. Copia old_snippet literalmente, escreve new_snippet corrigido
-    3. Usa patch_file
+    3. Para múltiplas correcções no mesmo ficheiro: usa patch_file_multi
+    4. Para uma única correcção: usa patch_file
 
     PROIBIDO:
     - Usar write_file em ficheiros existentes — usa patch_file
@@ -278,10 +305,15 @@ review_task:
     Usa run_tests com o caminho {project_path}.
     Regista o resultado exacto (passou/falhou/sem testes).
 
-    PASSO 2 — Leitura dos ficheiros modificados
-    Usa read_file para cada ficheiro que foi alterado (menciona o contexto acima).
-    Se o pedido original referenciar ficheiros de outro projecto, usa read_file
-    nesses ficheiros externos para comparação directa.
+    PASSO 2 — Verificação dos ficheiros modificados
+    O campo "summary" do contexto contém os blocos ANTES/DEPOIS de cada alteração.
+    Verifica a correctura directamente a partir do summary — é mais eficiente e evita
+    encher o contexto com ficheiros completos.
+    Se precisares de confirmar o contexto ao redor de uma linha específica:
+    - Usa read_file com start_line e end_line (ex: start_line=10, end_line=40)
+    - NUNCA leres um ficheiro completo sem start_line/end_line — é desperdício de contexto
+    Se o pedido original referenciar ficheiros de outro projecto para comparação directa:
+    - Usa grep_in_files ou compare_files em vez de read_file completo
 
     PASSO 2b — Validação de sintaxe PowerShell [se aplicável]
     Se o contexto ou o pedido original referenciar ficheiros .ps1 ou .psm1:

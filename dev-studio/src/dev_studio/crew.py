@@ -14,6 +14,7 @@ from dev_studio.tools.test_runner_tool import TestRunnerTool
 from dev_studio.tools.git_log_tool import GitLogTool
 from dev_studio.tools.project_memory_tool import ProjectMemoryReadTool, ProjectMemoryWriteTool
 from dev_studio.tools.patch_file_tool import PatchFileTool
+from dev_studio.tools.patch_file_multi_tool import PatchFileMultiTool
 from dev_studio.tools.endpoint_verify_tool import EndpointVerifyTool
 from dev_studio.tools.project_scanner_tool import ProjectScannerTool
 from dev_studio.tools.project_state_tool import ProjectStateReadTool
@@ -23,20 +24,16 @@ from dev_studio.utils.settings import load_settings as _load_settings  # noqa: E
 
 from crewai_tools import TavilySearchTool
 
-_TAVILY_KEY = os.environ.get("TAVILY_API_KEY", "")
-tavily_tool = TavilySearchTool(api_key=_TAVILY_KEY, max_results=3) if _TAVILY_KEY else None
-
 
 def _build_llms() -> tuple:
     """Build LLM instances from current settings (re-read on every crew instantiation)."""
     s = _load_settings()
-    url   = s["lm_base_url"]
-    key   = s["lm_api_key"]
-    model = s["model_name"] or "default"
+    url, key, model = s["lm_base_url"], s["lm_api_key"], s["model_name"] or "default"
+    _common = {"top_p": 0.95, "extra_body": {"enable_thinking": False}}  # type: ignore[call-overload]
     return (
-        LLM(model=model, base_url=url, api_key=key, temperature=0.4,  extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
-        LLM(model=model, base_url=url, api_key=key, temperature=0.15, extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
-        LLM(model=model, base_url=url, api_key=key, temperature=0.35, extra_body={"enable_thinking": False}),  # type: ignore[call-overload]
+        LLM(model=model, base_url=url, api_key=key, temperature=0.7,  **_common),  # architect
+        LLM(model=model, base_url=url, api_key=key, temperature=0.25, **_common),  # developer
+        LLM(model=model, base_url=url, api_key=key, temperature=0.4,  **_common),  # reviewer
     )
 
 dir_tool     = SmartDirectoryTool()
@@ -73,9 +70,13 @@ class DevStudioCrew:
     def __init__(self, project_path: str = ""):
         self._rules        = _load_rules(project_path)
         self._llm_a, self._llm_d, self._llm_r = _build_llms()
+        _s = _load_settings()
+        _tavily_key = _s.get("tavily_api_key", "")
+        self._tavily = TavilySearchTool(api_key=_tavily_key, max_results=3) if _tavily_key else None
         self._file_read    = ProjectFileReadTool(project_path=project_path)
         self._file_write   = DiffFileWriterTool(project_path=project_path)
         self._file_patch   = PatchFileTool(project_path=project_path)
+        self._file_patch_multi = PatchFileMultiTool(project_path=project_path)
         self._ep_verify    = EndpointVerifyTool(project_path=project_path)
         self._scanner      = ProjectScannerTool(project_path=project_path)
         self._state_read   = ProjectStateReadTool(project_path=project_path)
@@ -98,10 +99,10 @@ class DevStudioCrew:
                 grep_tool, compare_tool,          # cross-project analysis
                 self._ep_verify,                  # verify API endpoints before plan
                 ps_validator,                     # syntax check (PS1/PSM1)
-                *([tavily_tool] if tavily_tool else []),  # web search (Tavily) — optional
+                *([self._tavily] if self._tavily else []),  # web search (Tavily) — optional
             ],
             verbose=True,
-            max_iter=15,
+            max_iter=10,
         )
 
     @agent
@@ -111,14 +112,17 @@ class DevStudioCrew:
             llm=self._llm_d,
             tools=[
                 dir_tool, self._file_read,
-                self._file_patch,   # PREFERÊNCIA: modifica ficheiros existentes com patch_file
-                self._file_write,   # apenas para criar ficheiros novos
+                self._file_patch,         # modifica 1 trecho de um ficheiro existente
+                self._file_patch_multi,   # modifica N trechos do mesmo ficheiro de uma vez
+                self._file_write,         # apenas para criar ficheiros novos
                 py_validator, ts_validator, ps_validator,
                 self._ep_verify,    # verificar endpoints antes de os usar
                 mem_write,
+                *([self._tavily] if self._tavily else []),
             ],
             verbose=True,
-            max_iter=25,
+            max_iter=40,
+            max_retry_limit=0,
         )
 
     @agent
@@ -130,9 +134,11 @@ class DevStudioCrew:
                 self._state_read,                           # verify routes/services exist
                 dir_tool, self._file_read, test_runner, mem_write,
                 grep_tool, compare_tool, ps_validator,      # deep review
+                *([self._tavily] if self._tavily else []),
             ],
             verbose=True,
             max_iter=8,
+            max_retry_limit=0,
         )
 
     @task

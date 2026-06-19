@@ -2,7 +2,9 @@
 Intercepts sys.stdout and builtins.input so crew output and approval
 prompts can be streamed to the browser via SSE.
 """
+import atexit
 import builtins
+import os
 import queue
 import re
 import sys
@@ -13,6 +15,15 @@ sse_queue: queue.Queue = queue.Queue()
 input_prompt_event = threading.Event()
 input_response_queue: queue.Queue = queue.Queue(maxsize=1)
 _cancel_requested = threading.Event()
+
+# ── Raw agent log (pre-filter, pre-SSE) ───────────────────────────────────────
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+_LOG_PATH = os.path.normpath(os.path.join(_LOG_DIR, "dev_studio_agents.log"))
+_agent_log = open(_LOG_PATH, "w", encoding="utf-8", buffering=1)  # noqa: WPS515
+atexit.register(_agent_log.close)
+
+# ── <think> tag defensive suppression ─────────────────────────────────────────
+_THINK_BLOCK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
 
 _current_prompt: str = ""
 _dashboard_active = False
@@ -428,7 +439,13 @@ class _TeeOutput:
 
         self._orig.write(text)
 
-        clean = _clean_rich_box(strip_ansi(text))
+        ansi_clean = strip_ansi(text)
+        # Write raw (ANSI-stripped) output to log file before any filtering.
+        _agent_log.write(ansi_clean)
+        # Suppress <think>...</think> blocks before SSE (defensive — LM Studio's
+        # enable_thinking:false should handle this, but guard against fallthrough).
+        ansi_clean = _THINK_BLOCK_RE.sub('', ansi_clean)
+        clean = _clean_rich_box(ansi_clean)
 
         # Flush events gathered inside _clean_rich_box (tool-start boxes)
         global _native_pending
