@@ -388,6 +388,90 @@ def _validate_and_clean(result: object, raw: str, agent_name: str) -> str:
     return raw
 
 
+def _validate_snippets_exist(arch_raw: str, project_path: str) -> tuple[str, list[str]]:
+    """Validate that snippets from architect's issues actually exist in the files.
+
+    Returns (possibly cleaned JSON, list of warning messages).
+    Strips issues whose snippets don't match the actual file content.
+    Also validates line numbers are within file bounds.
+    """
+    warnings = []
+    try:
+        import json
+        d = json.loads(arch_raw)
+        issues = d.get("issues", [])
+        valid_issues = []
+
+        for issue in issues:
+            file_path = issue.get("file", "")
+            line_str = issue.get("line", "")
+            snippet = issue.get("snippet", "")
+
+            if not file_path or not snippet:
+                valid_issues.append(issue)
+                continue
+
+            # Resolve file path
+            resolved = file_path
+            if not os.path.isabs(resolved):
+                resolved = os.path.join(project_path, resolved)
+            resolved = os.path.normpath(resolved)
+
+            if not os.path.exists(resolved):
+                warnings.append(f"Issue ignorado: ficheiro não existe: {file_path}")
+                continue
+
+            # Read the file and check if snippet exists
+            try:
+                with open(resolved, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                total_lines = len(content.splitlines())
+
+                # Validate line numbers are within bounds
+                if line_str:
+                    # Parse line numbers (e.g., "42" or "42-55")
+                    try:
+                        if "-" in str(line_str):
+                            start_line, end_line = map(int, str(line_str).split("-"))
+                        else:
+                            start_line = end_line = int(line_str)
+
+                        if start_line > total_lines:
+                            warnings.append(
+                                f"Issue ignorado: linha {start_line} excede tamanho do ficheiro "
+                                f"{os.path.basename(file_path)} ({total_lines} linhas)"
+                            )
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # Line parsing failed, continue with snippet check
+
+                # Check if snippet exists in file (exact or normalized)
+                if snippet in content:
+                    valid_issues.append(issue)
+                else:
+                    # Try normalized comparison
+                    norm_content = "\n".join(line.rstrip() for line in content.splitlines())
+                    norm_snippet = "\n".join(line.rstrip() for line in snippet.splitlines())
+                    if norm_snippet in norm_content:
+                        valid_issues.append(issue)
+                    else:
+                        warnings.append(
+                            f"Issue ignorado: snippet não encontrado em {os.path.basename(file_path)} "
+                            f"(linha {line_str}). Snippet: {snippet[:50]}..."
+                        )
+            except Exception as e:
+                warnings.append(f"Erro ao ler {file_path}: {e}")
+                valid_issues.append(issue)  # Keep on error
+
+        if len(valid_issues) < len(issues):
+            d["issues"] = valid_issues
+            return json.dumps(d, ensure_ascii=False), warnings
+
+    except Exception:
+        pass
+    return arch_raw, warnings
+
+
 def _fix_json_escapes(s: str) -> str:
     """Fix invalid JSON backslash escapes produced by LLMs writing Windows paths.
     Replaces \\X (where X is not a valid JSON escape character) with \\\\X."""
@@ -1085,6 +1169,39 @@ def full_flow_endpoint():
                 arch_raw = recovered
             arch_raw = _validate_and_clean(arch_result, arch_raw, "architect")
             _emit_result_card(arch_result, "architect")
+
+            # ── Validate snippets exist in actual files ────────────────────────
+            arch_raw, snippet_warnings = _validate_snippets_exist(arch_raw, project_path)
+            for warn in snippet_warnings:
+                capture.sse_queue.put({"type": "output", "text": f"⚠️ {warn}\n"})
+            if snippet_warnings:
+                capture.sse_queue.put({"type": "output", "text":
+                    f"\n🔧 {len(snippet_warnings)} issue(s) removidos (snippets não encontrados no ficheiro actual).\n"})
+
+            # ── Validate changes file paths exist ──────────────────────────────
+            try:
+                d = json.loads(arch_raw)
+                changes = d.get("changes", [])
+                valid_changes = []
+                for change in changes:
+                    path = change.get("path", "")
+                    if not path:
+                        valid_changes.append(change)
+                        continue
+                    resolved = path
+                    if not os.path.isabs(resolved):
+                        resolved = os.path.join(project_path, resolved)
+                    resolved = os.path.normpath(resolved)
+                    if os.path.exists(resolved):
+                        valid_changes.append(change)
+                    else:
+                        capture.sse_queue.put({"type": "output", "text":
+                            f"⚠️ Change ignorado: ficheiro não existe: {path}\n"})
+                if len(valid_changes) < len(changes):
+                    d["changes"] = valid_changes
+                    arch_raw = json.dumps(d, ensure_ascii=False)
+            except Exception:
+                pass
 
             # Extract structured plan dict for the approval modal
             plan_pydantic = getattr(arch_result, "pydantic", None)

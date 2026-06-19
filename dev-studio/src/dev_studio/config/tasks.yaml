@@ -136,6 +136,14 @@ design_task:
     - [ ] Se o pedido envolve .ps1/.psm1: chamei validate_powershell para cada .ps1 do projecto? (PASSO 5)
     - [ ] Se o pedido envolve dados da API: chamei mark_endpoint_verified? (PASSO 6b)
 
+    ⛔ VERIFICAÇÃO DE SNIPPETS — OBRIGATÓRIA para cada issue com "line":
+    Para CADA issue que tem um campo "line" (número de linha):
+    1. Confirma que o "snippet" do issue é EXACTAMENTE igual ao código que viste no read_file
+    2. Confirma que a "line" está dentro do intervalo do ficheiro (ex: ficheiro tem 163 linhas,
+       não podes propor linhas 162-193)
+    3. Se o snippet não coincide ou a linha está fora do alcance → CORRIGE o issue antes de continuar
+    ⚠️ UM SNIPPET INCORRECTO = O DEVELOPER NÃO CONSEGUE APLICAR O PATCH
+
     ⛔ SE JÁ EXECUTASTE TODOS OS PASSOS APLICÁVEIS → escreve "Final Answer" agora.
     ⛔ NÃO REPITAS ferramentas que já chamaste para o mesmo ficheiro.
     ⛔ O checklist é para CONFIRMAR o que já fizeste — NÃO para re-executar.
@@ -222,11 +230,15 @@ implement_task:
          que RENDERIZA o elemento — (click), onClick, ng-click, etc. — NÃO a função de carregamento
        - Alterações de dados/API: procura a função que chama o endpoint
        Nunca confundas rendering com data loading.
-    4. Usa patch_file com:
+    4. VERIFICAÇÃO DE SNIPPET — OBRIGATÓRIA antes de chamar patch_file:
+       - O "old_snippet" que vais usar EXISTE no ficheiro que leste?
+       - Copia LITERALMENTE do read_file — NUNCA reconstruas de memória
+       - Se o snippet não coincide com o que leste, NÃO chames patch_file
+    5. Usa patch_file com:
        - old_snippet: copiado LITERALMENTE do read_file, com 2-3 linhas de contexto
        - new_snippet: o mesmo trecho com APENAS as linhas alteradas
-    5. Se patch_file retornar "não encontrado": volta ao read_file, copia de novo, repete
-    6. Se patch_file retornar BLOQUEADO: corrige new_snippet antes de tentar outra vez
+    6. Se patch_file retornar "não encontrado": volta ao read_file, copia de novo, repete
+    7. Se patch_file retornar BLOQUEADO: corrige new_snippet antes de tentar outra vez
 
     PROIBIDO:
     - Usar write_file em ficheiros que já existem — usa patch_file
@@ -269,9 +281,13 @@ fix_task:
     Para cada problema listado:
     1. Lê o ficheiro actual com read_file
     2. Identifica o trecho MÍNIMO que contém o problema
-    3. Usa patch_file com old_snippet copiado LITERALMENTE do read_file e new_snippet corrigido
-    4. Se patch_file retornar BLOQUEADO (sintaxe): corrige new_snippet
-    5. Se patch_file retornar "não encontrado": relê o ficheiro, copia de novo
+    3. VERIFICAÇÃO DE SNIPPET — OBRIGATÓRIA:
+       - O código que identificaste existe EXACTAMENTE no ficheiro?
+       - Copia LITERALMENTE do read_file — NUNCA reconstruas de memória
+       - Se o snippet não coincide, NÃO chames patch_file
+    4. Usa patch_file com old_snippet copiado LITERALMENTE do read_file e new_snippet corrigido
+    5. Se patch_file retornar BLOQUEADO (sintaxe): corrige new_snippet
+    6. Se patch_file retornar "não encontrado": relê o ficheiro, copia de novo
 
     PROIBIDO:
     - Usar write_file em ficheiros que já existem — usa patch_file
