@@ -59,9 +59,11 @@ export class ApiService {
     return firstValueFrom(this.http.post<{ ok: boolean; num: number; error?: string }>('/api/request/full-flow', { request }));
   }
 
-  approvePlan(approvedIndices?: number[]) {
-    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/plan/approve',
-      approvedIndices != null ? { approved_indices: approvedIndices } : {}));
+  approvePlan(approvedIndices?: number[], approvedIssueIndices?: number[]) {
+    const body: Record<string, number[]> = {};
+    if (approvedIndices       != null) body['approved_indices']       = approvedIndices;
+    if (approvedIssueIndices  != null) body['approved_issue_indices'] = approvedIssueIndices;
+    return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/plan/approve', body));
   }
 
   rejectPlan(feedback: string) {
@@ -69,10 +71,10 @@ export class ApiService {
   }
 
   getSettings() {
-    return firstValueFrom(this.http.get<{ lm_base_url: string; lm_api_key: string; model_name: string }>('/api/settings'));
+    return firstValueFrom(this.http.get<{ lm_base_url: string; lm_api_key: string; model_name: string; tavily_api_key: string }>('/api/settings'));
   }
 
-  saveSettings(data: { lm_base_url: string; lm_api_key: string; model_name: string }) {
+  saveSettings(data: { lm_base_url: string; lm_api_key: string; model_name: string; tavily_api_key: string }) {
     return firstValueFrom(this.http.post<{ ok: boolean; error?: string }>('/api/settings', data));
   }
 

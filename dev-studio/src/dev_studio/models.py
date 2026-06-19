@@ -16,7 +16,8 @@ class Issue(BaseModel):
     file: str = Field(description="Absolute path to the file containing the issue")
     line: str = Field(default="", description="Line number or range, e.g. '42' or '42-55'")
     description: str = Field(description="Clear description of the issue")
-    snippet: str = Field(default="", description="Exact code snippet copied from read_file — proof of the issue")
+    snippet: str = Field(default="", description="Exact code as it currently exists in the file (verbatim, no diff markers) — used as old_snippet for patching. Proof of the issue.")
+    patch_after: str = Field(default="", description="Exact replacement code (corrected version, verbatim, no diff markers) — used as new_snippet for patching. Empty only when replacement cannot be determined from analysis alone.")
     severity: str = Field(default="medium", description="low | medium | high | critical")
 
 

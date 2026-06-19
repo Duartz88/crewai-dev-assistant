@@ -78,6 +78,33 @@ def _lm_ping() -> tuple[bool, str | None]:
         return False, f"Erro ao verificar LM Studio: {e}"
     return True, None
 
+
+def _lm_keepalive() -> None:
+    """Fire-and-forget 1-token inference to prevent LM Studio from auto-unloading the model.
+    Called in a background thread during plan approval wait so the idle timer never fires."""
+    try:
+        from dev_studio.utils.settings import load_settings
+        s = load_settings()
+        payload = json.dumps({
+            "model": s["model_name"] or "default",
+            "messages": [{"role": "user", "content": "."}],
+            "max_tokens": 1,
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"{s['lm_base_url']}/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {s['lm_api_key']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=20)
+    except Exception:
+        pass  # non-fatal — next tick will retry
+
+
 _SESSION_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".crew_session.json")
 _HISTORY_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".crew_history.json")
 _session_lock = threading.Lock()
@@ -266,20 +293,28 @@ def _get_project_map(project_path: str) -> str:
 
 
 def _get_project_state(project_path: str) -> tuple[object, str]:
-    """Return (state, summary_text), cached by git-index mtime.
+    """Return (state, summary_text), cached by git-index mtime + dirty flag.
 
+    Invalidates when .git/index changes (staged files) OR when the working
+    tree has unstaged modifications, so the state stays accurate after any
+    tool writes a file even before the user runs git add.
     Returns (None, "") on error so callers can gracefully degrade.
     """
     from dev_studio.tools.project_state_tool import write_project_state, summarize_state
     global _state_cache
     mtime = _git_index_mtime(project_path)
-    if (_state_cache["path"] == project_path
-            and _state_cache["mtime"] == mtime
+    try:
+        dirty_flag = bool(run_git(["status", "--porcelain"], project_path).stdout.strip())
+    except Exception:
+        dirty_flag = False
+    cache_key = (project_path, mtime, dirty_flag)
+    if (_state_cache.get("key") == cache_key
             and _state_cache["state"] is not None):
         return _state_cache["state"], _state_cache["summary"]
     state   = write_project_state(project_path)
     summary = summarize_state(state)
-    _state_cache = {"path": project_path, "mtime": mtime, "state": state, "summary": summary}
+    _state_cache = {"key": cache_key, "path": project_path, "mtime": mtime,
+                    "state": state, "summary": summary}
     return state, summary
 
 
@@ -474,9 +509,29 @@ def _validate_snippets_exist(arch_raw: str, project_path: str) -> tuple[str, lis
 
 def _fix_json_escapes(s: str) -> str:
     """Fix invalid JSON backslash escapes produced by LLMs writing Windows paths.
-    Replaces \\X (where X is not a valid JSON escape character) with \\\\X."""
-    # Valid chars after a JSON backslash: " \\ / b f n r t u (and digits for \uXXXX)
-    return re.sub(r'\\(?!["\\/bfnrtux0-9])', r'\\\\', s)
+
+    Uses a state machine instead of a regex so it doesn't misfire on valid
+    escape sequences that coincidentally appear in Windows paths (e.g. \\t in
+    C:\\tests\\ would be touched by a naive negative-lookahead regex).
+
+    Valid JSON escapes after \\: " \\ / b f n r t u
+    Everything else gets doubled: \\X → \\\\X
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == '\\' and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt in '"\\/ bfnrtu':
+                result.append(ch)   # keep valid escape as-is
+            else:
+                result.append('\\\\')  # double the backslash
+            i += 1
+        else:
+            result.append(ch)
+        i += 1
+    return ''.join(result)
 
 
 def _recover_arch_json(exc: Exception) -> str | None:
@@ -501,6 +556,162 @@ def _recover_arch_json(exc: Exception) -> str | None:
     return None
 
 
+def _norm_patch(text: str) -> str:
+    """Normalise for matching: strip trailing whitespace + CRLF→LF."""
+    return "\n".join(l.rstrip() for l in text.splitlines())
+
+
+def _stripped_find(content: str, snippet: str) -> str | None:
+    """Find snippet by stripped-line comparison (ignores leading/trailing whitespace).
+    Returns the actual file text or None if not found/ambiguous."""
+    c_lines = content.splitlines(keepends=True)
+    s_lines = snippet.splitlines()
+    n = len(s_lines)
+    if n == 0:
+        return None
+    c_sigs = [l.strip() for l in c_lines]
+    s_sigs = [l.strip() for l in s_lines]
+    matches: list[tuple[int, int]] = []
+    for i in range(len(c_lines) - n + 1):
+        if c_sigs[i:i + n] == s_sigs:
+            matches.append((i, i + n))
+    if len(matches) == 1:
+        return "".join(c_lines[matches[0][0]:matches[0][1]])
+    return None
+
+
+def _apply_single_patch(
+    content: str, snippet: str, patch_after: str, line_hint: str
+) -> tuple[bool, str]:
+    """Apply one snippet→patch_after replacement using 4 strategies in order.
+
+    Returns (True, new_content) on success or (False, error_message) on failure.
+
+    Strategy 1 — exact match
+    Strategy 2 — normalised (trailing ws stripped, CRLF→LF)
+    Strategy 3 — line-anchored (uses issue.line ± 5 lines, normalised comparison)
+    Strategy 4 — stripped-line (ignores all leading/trailing whitespace per line)
+    """
+    # 1 — exact
+    if snippet in content:
+        if content.count(snippet) > 1:
+            return False, f"Snippet ambíguo (aparece {content.count(snippet)}× no ficheiro)"
+        return True, content.replace(snippet, patch_after, 1)
+
+    # 2 — normalised (handles CRLF and trailing spaces)
+    nc = _norm_patch(content)
+    ns = _norm_patch(snippet)
+    if ns and ns in nc:
+        if nc.count(ns) > 1:
+            return False, f"Snippet ambíguo (normalizado, {nc.count(ns)}×)"
+        start = nc.index(ns)
+        end   = start + len(ns)
+        return True, nc[:start] + _norm_patch(patch_after) + nc[end:]
+
+    # 3 — line-anchored: use issue.line to find exact location (± 5 lines tolerance)
+    if line_hint:
+        try:
+            start_line = int(line_hint.split("-")[0]) - 1  # 0-indexed
+            c_lines    = content.splitlines(keepends=True)
+            s_lines    = snippet.splitlines()
+            n          = len(s_lines)
+            for offset in range(-5, 6):
+                pos = start_line + offset
+                if pos < 0 or pos + n > len(c_lines):
+                    continue
+                block = "".join(c_lines[pos:pos + n])
+                if _norm_patch(block) == _norm_patch(snippet):
+                    new_content = "".join(c_lines[:pos]) + patch_after + "".join(c_lines[pos + n:])
+                    return True, new_content
+        except (ValueError, IndexError):
+            pass
+
+    # 4 — stripped-line: tolerates indentation differences from model-generated snippets
+    actual_old = _stripped_find(content, snippet)
+    if actual_old is not None:
+        if content.count(actual_old) > 1:
+            return False, f"Correspondência aproximada ambígua ({content.count(actual_old)}×)"
+        return True, content.replace(actual_old, patch_after, 1)
+
+    # All strategies failed
+    first   = snippet.strip().splitlines()[0][:50] if snippet.strip() else ""
+    similar = [l.rstrip() for l in content.splitlines() if first[:20] in l][:3]
+    hint    = ("\n  Linhas semelhantes: " + " | ".join(similar)) if similar else ""
+    return False, f"Snippet não encontrado (4 estratégias tentadas).{hint}"
+
+
+def _apply_patches_from_plan(issues: list[dict], project_path: str) -> tuple[list[str], list[str]]:
+    """Apply patch_after directly from Architect issues (VIA DIRECTA — sem Developer LLM).
+
+    Uses 4-strategy matching per patch: exact → normalised → line-anchored → stripped-line.
+    Groups patches by file and writes each file exactly once.
+    Returns (files_modified, errors).
+    """
+    from collections import defaultdict
+
+    by_file: dict[str, list[dict]] = defaultdict(list)
+    for issue in issues:
+        if issue.get("snippet", "").strip() and issue.get("patch_after", "").strip():
+            by_file[issue["file"]].append(issue)
+
+    files_modified: list[str] = []
+    errors: list[str] = []
+
+    for filepath, file_issues in by_file.items():
+        try:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+        except Exception as exc:
+            msg = f"Não foi possível ler '{os.path.basename(filepath)}': {exc}"
+            errors.append(msg)
+            capture.sse_queue.put({"type": "output", "text": f"  ❌ {msg}\n"})
+            continue
+
+        modified    = content
+        file_errors: list[str] = []
+
+        for issue in file_issues:
+            ok, result = _apply_single_patch(
+                modified,
+                issue["snippet"],
+                issue["patch_after"],
+                issue.get("line", ""),
+            )
+            if ok:
+                modified = result
+            else:
+                file_errors.append(f"  linha {issue.get('line', '?')}: {result}")
+
+        if file_errors:
+            err_msg = (
+                f"{os.path.basename(filepath)} — {len(file_errors)} patch(es) falharam:\n"
+                + "\n".join(file_errors)
+            )
+            errors.append(err_msg)
+            capture.sse_queue.put({"type": "output", "text": f"  ❌ {err_msg}\n"})
+            continue
+
+        if modified == content:
+            msg = f"{os.path.basename(filepath)}: nenhuma alteração detectada"
+            errors.append(msg)
+            capture.sse_queue.put({"type": "output", "text": f"  ⚠️ {msg}\n"})
+            continue
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(modified)
+            n = len(file_issues)
+            files_modified.append(filepath)
+            capture.sse_queue.put({"type": "output", "text":
+                f"  ✅ {os.path.basename(filepath)} — {n} patch(es) aplicado(s)\n"})
+        except Exception as exc:
+            msg = f"Falha ao escrever '{os.path.basename(filepath)}': {exc}"
+            errors.append(msg)
+            capture.sse_queue.put({"type": "output", "text": f"  ❌ {msg}\n"})
+
+    return files_modified, errors
+
+
 def _pre_flight_warnings(project_path: str) -> list[str]:
     """Return non-blocking warnings before starting a full flow run."""
     warns: list[str] = []
@@ -522,23 +733,65 @@ def _pre_flight_warnings(project_path: str) -> list[str]:
     return warns
 
 
-def _trim_plan_for_developer(arch_raw: str, approved_indices: list[int] | None = None) -> str:
-    """Strip the verbose `plan` markdown from architect JSON before sending to developer.
+def _trim_plan_for_developer(
+    arch_raw: str,
+    approved_indices: list[int] | None = None,
+    approved_issue_indices: list[int] | None = None,
+) -> str:
+    """Build the minimal context for the Developer agent.
 
-    The developer only needs changes, issues, endpoints_verified and files_read.
-    If approved_indices is not None, filter changes to only the approved subset.
+    Keeps only what the Developer actually needs:
+    - issues (with snippets — the Developer uses these for fast patch_file)
+    - changes (file paths and actions)
+    - plan (ANTES/DEPOIS markdown — allows patch_file without read_file first)
+
+    Drops files_read and endpoints_verified — the Developer never uses them and
+    they inflate the context window significantly.
+
+    approved_indices: filter changes to only the approved subset (None = all)
+    approved_issue_indices: filter issues to only the selected subset (None = all)
     Falls back to the original string if arch_raw is not valid JSON.
     """
     try:
         d = json.loads(arch_raw)
-        changes = d.get("changes", [])
-        if approved_indices is not None:
-            changes = [changes[i] for i in approved_indices if i < len(changes)]
+        all_changes = d.get("changes", [])
+        all_issues  = d.get("issues", [])
+
+        changes = ([all_changes[i] for i in approved_indices if i < len(all_changes)]
+                   if approved_indices is not None else all_changes)
+
+        issues  = ([all_issues[i]  for i in approved_issue_indices if i < len(all_issues)]
+                   if approved_issue_indices is not None else all_issues)
+
+        # Strip snippet + patch_after from issues — both are already in plan ANTES/DEPOIS.
+        # Keeps file/line/description/severity so Developer knows where to look,
+        # but avoids duplicating code blocks already in the plan field.
+        issues_compact = [
+            {k: v for k, v in issue.items() if k not in ("snippet", "patch_after")}
+            for issue in issues
+        ]
+
+        # Cap plan field to prevent Developer context overflow.
+        # For comparison tasks, the architect writes the full diff in plan (incl.
+        # device-specific differences that are NOT real issues). Capping prevents
+        # the first Developer LLM call from exceeding the model's context window.
+        # Issues list (file/line/description) is always preserved — Developer can
+        # use VIA LENTA (read_file → patch_file) for any section not in plan.
+        _PLAN_CAP = 5000
+        plan_text = d.get("plan", "")
+        if len(plan_text) > _PLAN_CAP:
+            plan_text = (
+                plan_text[:_PLAN_CAP]
+                + f"\n\n⚠️ [PLANO TRUNCADO — original: {len(d.get('plan', ''))} chars, "
+                f"máx: {_PLAN_CAP}. "
+                "Para issues sem ANTES/DEPOIS acima: usa VIA LENTA "
+                "(read_file na linha indicada → patch_file / patch_file_multi).]\n"
+            )
+
         return json.dumps({
-            "files_read":         d.get("files_read", []),
-            "issues":             d.get("issues", []),
-            "changes":            changes,
-            "endpoints_verified": d.get("endpoints_verified", []),
+            "issues":  issues_compact,
+            "changes": changes,
+            "plan":    plan_text,
         }, ensure_ascii=False, indent=2)
     except Exception:
         return arch_raw
@@ -609,6 +862,7 @@ def _emit_full_flow_summary(
     rev_result:  object | None = None,
     fix_result:  object | None = None,
     rev2_result: object | None = None,
+    backend_files: list[str] | None = None,
 ) -> None:
     """Emit the combined Resumo Final after a Fluxo Completo run."""
     try:
@@ -622,9 +876,12 @@ def _emit_full_flow_summary(
             lines.append(f"### Planeado ({len(arch_plan.changes)} alteração/alterações)")
             lines.extend(f"- {c.action.upper()} {c.path}" for c in arch_plan.changes)
 
-        # ── Implementado (Developer) ───────────────────────────────────────────
+        # ── Implementado (Backend VIA DIRECTA ou Developer LLM) ───────────────
         dev_impl = getattr(dev_result, "pydantic", None)
-        if isinstance(dev_impl, ImplementationResult):
+        if backend_files is not None:
+            lines.append(f"### Patchado pelo Backend ({len(backend_files)} ficheiro(s))")
+            lines.extend(f"- PATCHADO {f}" for f in backend_files)
+        elif isinstance(dev_impl, ImplementationResult):
             total = len(dev_impl.files_modified) + len(dev_impl.files_created)
             lines.append(f"### Implementado ({total} ficheiro(s))")
             lines.extend(f"- MODIFICADO {f}" for f in dev_impl.files_modified)
@@ -1086,10 +1343,95 @@ def lm_status():
 
 
 # ── Full-flow plan approval state ─────────────────────────────────────────────
+# Using an Event + plain variable instead of a Queue eliminates the race where
+# a stale API call (e.g. double-click) could inject a second decision between
+# the queue.empty() drain loop and the blocking get(), silently overriding the
+# user's real choice.
 
-_plan_approval_event = threading.Event()
-_plan_approval_queue: queue.Queue = queue.Queue(maxsize=1)  # True=approved | str=feedback
+_plan_approval_event    = threading.Event()
+_plan_approval_decision: dict | None = None   # set atomically by approve/reject endpoints
+_plan_approval_lock     = threading.Lock()    # guards _plan_approval_decision writes
 _pending_plan_data: dict | None = None
+
+
+_CONN_MARKERS      = ("Connection error", "ConnectError", "10051", "10061")
+_CRASH_MARKERS     = ("model has crashed", "The model has crashed", "18446744072635812000", "No models loaded")
+_CONVERTER_MARKERS = ("ConverterError", "convert text into a Pydantic model")
+
+_PARTIAL_DEV_JSON = (
+    '{"files_modified":[],"files_created":[],"syntax_errors":[],'
+    '"summary":"⚠️ Developer interrompido por limite de iterações (max_iter) — '
+    'algumas alterações podem estar incompletas."}'
+)
+
+
+def _wait_for_model_reload(sse_put, timeout: int = 600, poll: int = 30) -> None:
+    """Emit crash notification and poll LM Studio until model is back online.
+
+    Raises RuntimeError on timeout so the caller can propagate the failure.
+    """
+    sse_put({"type": "lm_error", "text":
+        "\n💥 O modelo rebentou (GPU OOM ou erro interno do LM Studio).\n"
+        "➡️  Abre o LM Studio → Developer e recarrega o modelo.\n"
+        f"⏳ A aguardar que o modelo volte online (máx. {timeout // 60} min)...\n"})
+    waited = 0
+    while waited < timeout:
+        time.sleep(poll)
+        waited += poll
+        ok, _ = _lm_ping()
+        if ok:
+            sse_put({"type": "output", "text":
+                f"✅ Modelo disponível novamente após {waited}s. A retomar o agente...\n"})
+            return
+        sse_put({"type": "output", "text":
+            f"   ⏳ Modelo ainda offline... ({waited}s / {timeout}s)\n"})
+    sse_put({"type": "output", "text":
+        f"⛔ Tempo esgotado ({timeout}s). Cancela e recarrega o modelo manualmente.\n"})
+    raise RuntimeError("Timeout aguardando modelo após crash")
+
+
+def _kickoff_developer(crew_fn, inputs: dict):
+    """Kickoff developer/fix crew; recover gracefully from ConverterError (max_iter hit)."""
+    try:
+        result = _kickoff_with_retry(
+            lambda: crew_fn().kickoff(inputs=inputs),
+            capture.sse_queue.put,
+        )
+        raw = str(result.raw) if hasattr(result, "raw") else str(result)
+        return result, raw
+    except Exception as e:
+        if any(m in str(e) or m in type(e).__name__ for m in _CONVERTER_MARKERS):
+            capture.sse_queue.put({"type": "output", "text":
+                "\n⚠️ Developer atingiu o limite de iterações — algumas alterações podem "
+                "estar incompletas. A continuar para o Reviewer...\n"})
+            return None, _PARTIAL_DEV_JSON
+        raise
+
+
+def _kickoff_with_retry(kickoff_fn, sse_put, max_attempts: int = 6, delay: int = 10):
+    """Retry on connection errors (up to max_attempts); wait for model reload on crash (once)."""
+    crash_retried = False
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return kickoff_fn()
+        except Exception as e:
+            err_str = str(e)
+
+            # Model crash (GPU OOM / internal error): wait for reload, retry once
+            if any(m in err_str for m in _CRASH_MARKERS) and not crash_retried:
+                crash_retried = True
+                _wait_for_model_reload(sse_put)  # raises RuntimeError on timeout
+                continue  # retry without counting as a connection-error attempt
+
+            if any(m in err_str for m in _CONN_MARKERS) and attempt < max_attempts:
+                sse_put({"type": "output", "text":
+                    f"⚠️ LM Studio inacessível (tentativa {attempt}/{max_attempts}), "
+                    f"a aguardar {delay}s...\n"})
+                time.sleep(delay)
+            else:
+                raise
 
 
 @app.route("/api/request/full-flow", methods=["POST"])
@@ -1117,7 +1459,7 @@ def full_flow_endpoint():
     context_snapshot = _last_agent_output
 
     def _run():
-        global _last_agent_output, _last_agent_name, _pending_plan_data, _active_crew_thread
+        global _last_agent_output, _last_agent_name, _pending_plan_data, _active_crew_thread, _plan_approval_decision
         _active_crew_thread = threading.current_thread()
         from dev_studio.crew import DevStudioCrew
         project_path = session["project_path"]
@@ -1148,14 +1490,19 @@ def full_flow_endpoint():
                 capture.sse_queue.put({"type": "scanning_done", "text": f"⚠️ Análise falhou: {_e}"})
                 capture.sse_queue.put({"type": "output", "text": f"⚠️ Project state scanner falhou: {_e}\n"})
 
-            context_with_map = f"{project_map}\n\n{context_snapshot}" if context_snapshot else project_map
-            inputs = {"request": user_request, "project_path": project_path, "context": context_with_map}
+            # Arquitecto recebe APENAS o project_map — não o context_snapshot do agente anterior.
+            # O Full Flow é sempre uma análise nova: o Arquitecto lê os ficheiros por si mesmo.
+            # Incluir o output anterior inflaria o contexto e podia causar crash de GPU (OOM).
+            inputs = {"request": user_request, "project_path": project_path, "context": project_map}
 
             # ── Fase 1/3: Arquitecto ───────────────────────────────────────────
             capture.sse_queue.put({"type": "output", "text": "\nFase 1/3 — Arquitecto a analisar...\n"})
             crew = DevStudioCrew(project_path=project_path)
             try:
-                arch_result = crew.crew().kickoff(inputs=inputs)
+                arch_result = _kickoff_with_retry(
+                    lambda: crew.crew().kickoff(inputs=inputs),
+                    capture.sse_queue.put,
+                )
                 arch_raw = str(arch_result.raw) if hasattr(arch_result, "raw") else str(arch_result)
             except Exception as _kickoff_err:
                 # LLMs sometimes write Windows paths like C:\_PROJECTS\ inside JSON
@@ -1217,16 +1564,19 @@ def full_flow_endpoint():
                     }
 
             # ── Aguarda aprovação do plano ─────────────────────────────────────
+            # Reset event + decision before publishing the plan so any stale
+            # API call that fires between here and the wait() is dropped.
+            with _plan_approval_lock:
+                _plan_approval_decision = None
             _plan_approval_event.clear()
-            while not _plan_approval_queue.empty():
-                try: _plan_approval_queue.get_nowait()
-                except Exception: break
 
             _pending_plan_data = plan_dict
             capture.sse_queue.put({"type": "plan_ready", "plan": plan_dict, "num": req_num})
 
             # Wait for user approval in 30-second ticks, emitting a countdown event
             # each tick so the frontend can show remaining time in the modal.
+            # A keepalive inference (1 token) is fired on each tick to prevent
+            # LM Studio from auto-unloading the model while the user reviews the plan.
             _APPROVAL_TIMEOUT = 600
             _TICK = 30
             elapsed_wait = 0
@@ -1238,16 +1588,16 @@ def full_flow_endpoint():
                 elapsed_wait += _TICK
                 remaining = _APPROVAL_TIMEOUT - elapsed_wait
                 capture.sse_queue.put({"type": "plan_countdown", "remaining": remaining})
+                threading.Thread(target=_lm_keepalive, daemon=True).start()
 
             if not got_response:
                 capture.sse_queue.put({"type": "output", "text": "\nTempo esgotado a aguardar aprovação.\n"})
                 entry["status"] = "cancelled"
                 return
 
-            try:
-                decision = _plan_approval_queue.get_nowait()
-            except queue.Empty:
-                decision = {"approved": True, "indices": None}
+            with _plan_approval_lock:
+                decision = _plan_approval_decision or {"approved": True, "indices": None, "issue_indices": None}
+                _plan_approval_decision = None
 
             approved = decision.get("approved", False) if isinstance(decision, dict) else False
             if not approved:
@@ -1260,17 +1610,24 @@ def full_flow_endpoint():
 
             # ── Fase 2/3: Developer ────────────────────────────────────────────
             approved_indices: list[int] | None = decision.get("indices") if isinstance(decision, dict) else None
+            approved_issue_indices: list[int] | None = decision.get("issue_indices") if isinstance(decision, dict) else None
 
             # Determine the effective change list after granular filtering
             all_changes = plan_dict.get("changes", [])
+            all_issues  = plan_dict.get("issues",  [])
             if approved_indices is None:
                 effective_changes = all_changes
             else:
                 effective_changes = [all_changes[i] for i in approved_indices if i < len(all_changes)]
 
+            if approved_issue_indices is None:
+                effective_issues = all_issues
+            else:
+                effective_issues = [all_issues[i] for i in approved_issue_indices if i < len(all_issues)]
+
             # Nothing to implement: skip developer+reviewer and complete
-            if not effective_changes:
-                msg = "\n✅ Sem mudanças a implementar. Tarefa concluída pelo Arquitecto.\n"
+            if not effective_changes and not effective_issues:
+                msg = "\n✅ Sem mudanças ou issues a implementar. Tarefa concluída pelo Arquitecto.\n"
                 capture.sse_queue.put({"type": "output", "text": msg})
                 _last_agent_output = arch_raw
                 _last_agent_name = "full-flow"
@@ -1279,29 +1636,131 @@ def full_flow_endpoint():
                 capture.sse_queue.put({"type": "context_updated", "from_agent": "full-flow", "agent_label": "Fluxo Completo"})
                 return  # falls into finally block for cleanup
 
+            parts: list[str] = []
             if approved_indices is not None and len(effective_changes) < len(all_changes):
+                parts.append(f"{len(effective_changes)}/{len(all_changes)} mudanças")
+            if approved_issue_indices is not None and len(effective_issues) < len(all_issues):
+                parts.append(f"{len(effective_issues)}/{len(all_issues)} issues")
+            if parts:
                 capture.sse_queue.put({"type": "output", "text":
-                    f"ℹ️ Aprovação parcial: {len(effective_changes)}/{len(all_changes)} mudanças seleccionadas.\n"})
+                    f"ℹ️ Aprovação parcial: {', '.join(parts)} seleccionados.\n"})
 
-            arch_trimmed = _trim_plan_for_developer(arch_raw, approved_indices)
-            dev_context = f"{project_map}\n\n{arch_trimmed}"
-            capture.sse_queue.put({"type": "output", "text": "\nFase 2/3 — Developer a implementar...\n"})
-            dev_result = crew.implement_crew().kickoff(inputs={
-                "request": user_request,
-                "project_path": project_path,
-                "context": dev_context,
-            })
-            dev_raw = str(dev_result.raw) if hasattr(dev_result, "raw") else str(dev_result)
-            dev_raw = _validate_and_clean(dev_result, dev_raw, "developer")
-            _emit_result_card(dev_result, "developer")
+            # ── Auto-detect: all issues have patch_after → VIA DIRECTA (skip Developer LLM) ──
+            effective_creates = [c for c in effective_changes if c.get("action") == "create"]
+            patches_ready = (
+                bool(effective_issues)
+                and not effective_creates
+                and all(
+                    i.get("snippet", "").strip() and i.get("patch_after", "").strip()
+                    for i in effective_issues
+                )
+            )
+
+            backend_files_applied: list[str] | None = None
+
+            if patches_ready:
+                # ── Path sanity check (VIA DIRECTA) — valida issue.file antes de aplicar ──
+                _bad_issue_paths = [
+                    i.get("file", "")
+                    for i in effective_issues
+                    if not os.path.isabs(i.get("file", ""))
+                    or not os.path.exists(i.get("file", ""))
+                ]
+                if _bad_issue_paths:
+                    capture.sse_queue.put({"type": "output", "text":
+                        f"\n⛔ VALIDAÇÃO: {len(_bad_issue_paths)} path(s) de issues não existem no disco:\n"
+                        + "\n".join(f"  - {p}" for p in _bad_issue_paths)
+                        + "\nO Arquitecto aluciou os caminhos. Corrige o plano ou re-executa.\n"})
+                    entry["status"] = "error"
+                    return
+
+                # VIA DIRECTA — backend aplica patches directamente, sem Developer LLM
+                capture.sse_queue.put({"type": "output", "text":
+                    f"\nFase 2/3 — Backend a aplicar {len(effective_issues)} patch(es) directamente"
+                    f" (VIA DIRECTA — sem Developer LLM)...\n"})
+                files_mod, patch_errors = _apply_patches_from_plan(effective_issues, project_path)
+                backend_files_applied = files_mod
+
+                # Build synthetic ImplementationResult for Reviewer context (ANTES/DEPOIS per issue)
+                synth_lines = ["## Patches aplicados pelo backend\n"]
+                for _iss in effective_issues:
+                    if _iss.get("snippet") and _iss.get("patch_after"):
+                        _fname = os.path.basename(_iss.get("file", ""))
+                        synth_lines.append(f"\n### {_fname}:{_iss.get('line', '?')}")
+                        synth_lines.append(f"**{_iss.get('description', '')}**\n")
+                        synth_lines.append("**ANTES:**\n```")
+                        synth_lines.append(_iss["snippet"])
+                        synth_lines.append("```\n**DEPOIS:**\n```")
+                        synth_lines.append(_iss["patch_after"])
+                        synth_lines.append("```")
+                if patch_errors:
+                    synth_lines.append(f"\n### Erros ({len(patch_errors)})")
+                    synth_lines.extend(f"- ❌ {e}" for e in patch_errors)
+
+                dev_raw = json.dumps({
+                    "files_modified": files_mod,
+                    "files_created":  [],
+                    "syntax_errors":  [],
+                    "summary":        "\n".join(synth_lines),
+                }, ensure_ascii=False)
+                dev_result = None
+
+                if patch_errors and not files_mod:
+                    # Todos os patches falharam — não há nada para o Reviewer verificar
+                    capture.sse_queue.put({"type": "output", "text":
+                        f"\n⛔ {len(patch_errors)} patch(es) falharam e nenhum ficheiro foi alterado."
+                        " O Reviewer não será executado.\n"
+                        "Causa provável: snippets incorrectos ou paths errados do Arquitecto. Re-executa o pedido.\n"})
+                    _last_agent_output = arch_raw
+                    _last_agent_name = "full-flow"
+                    entry["output"] = arch_raw
+                    entry["status"] = "error"
+                    return
+
+                if patch_errors:
+                    capture.sse_queue.put({"type": "output", "text":
+                        f"\n⚠️ {len(patch_errors)} patch(es) falharam — verifica os snippets do Arquitecto.\n"})
+
+            else:
+                # VIA LLM — Developer implementa (comportamento actual para features/creates)
+                arch_trimmed = _trim_plan_for_developer(arch_raw, approved_indices, approved_issue_indices)
+
+                # ── Path sanity check — catch Architect hallucinations before Developer runs ──
+                try:
+                    _plan_parsed = json.loads(arch_trimmed)
+                    _bad_paths = [
+                        c.get("path", "")
+                        for c in _plan_parsed.get("changes", [])
+                        if not os.path.isabs(c.get("path", ""))
+                        or not os.path.exists(c.get("path", ""))
+                    ]
+                    if _bad_paths:
+                        capture.sse_queue.put({"type": "output", "text":
+                            f"\n⛔ VALIDAÇÃO: {len(_bad_paths)} path(s) do plano não existem no disco:\n"
+                            + "\n".join(f"  - {p}" for p in _bad_paths)
+                            + "\nO Arquitecto pode ter alucinado os caminhos. Corrige o plano ou re-executa.\n"})
+                        entry["status"] = "error"
+                        return
+                except Exception:
+                    pass  # JSON parse failure handled downstream
+
+                dev_context = arch_trimmed
+                _ctx_kb = round(len(arch_trimmed.encode("utf-8")) / 1024, 1)
+                capture.sse_queue.put({"type": "output", "text":
+                    f"\nFase 2/3 — Developer a implementar... (contexto: {_ctx_kb} KB)\n"})
+                _dev_inputs = {"request": user_request, "project_path": project_path, "context": dev_context}
+                dev_result, dev_raw = _kickoff_developer(crew.implement_crew, _dev_inputs)
+                dev_raw = _validate_and_clean(dev_result, dev_raw, "developer")
+                if dev_result is not None:
+                    _emit_result_card(dev_result, "developer")
 
             # ── Fase 3/3: Reviewer ─────────────────────────────────────────────
             capture.sse_queue.put({"type": "output", "text": "\nFase 3/3 — Reviewer a verificar...\n"})
-            rev_result = crew.review_crew().kickoff(inputs={
-                "request": user_request,
-                "project_path": project_path,
-                "context": dev_raw,
-            })
+            _rev_inputs = {"request": user_request, "project_path": project_path, "context": dev_raw}
+            rev_result = _kickoff_with_retry(
+                lambda: crew.review_crew().kickoff(inputs=_rev_inputs),
+                capture.sse_queue.put,
+            )
             rev_raw = str(rev_result.raw) if hasattr(rev_result, "raw") else str(rev_result)
             # Emit card before validate so the card shows the original reviewer verdict,
             # not the force-approved one that _validate_and_clean may write in place.
@@ -1319,23 +1778,20 @@ def full_flow_endpoint():
                     "type": "output",
                     "text": f"\nReviewer identificou {n_issues} problema(s) — a corrigir (ciclo 1/1)...\n",
                 })
-                fix_result = crew.fix_only_crew().kickoff(inputs={
-                    "request": user_request,
-                    "project_path": project_path,
-                    "context": rev_raw,
-                })
-                fix_raw = str(fix_result.raw) if hasattr(fix_result, "raw") else str(fix_result)
+                _fix_inputs = {"request": user_request, "project_path": project_path, "context": rev_raw}
+                fix_result, fix_raw = _kickoff_developer(crew.fix_only_crew, _fix_inputs)
                 fix_raw = _validate_and_clean(fix_result, fix_raw, "developer")
-                _emit_result_card(fix_result, "developer")
+                if fix_result is not None:
+                    _emit_result_card(fix_result, "developer")
                 final_dev_raw = fix_raw
 
                 # Re-verificação após correcção
                 capture.sse_queue.put({"type": "output", "text": "\nRe-verificação após correções...\n"})
-                rev2_result = crew.review_crew().kickoff(inputs={
-                    "request": user_request,
-                    "project_path": project_path,
-                    "context": fix_raw,
-                })
+                _rev2_inputs = {"request": user_request, "project_path": project_path, "context": fix_raw}
+                rev2_result = _kickoff_with_retry(
+                    lambda: crew.review_crew().kickoff(inputs=_rev2_inputs),
+                    capture.sse_queue.put,
+                )
                 rev2_raw = str(rev2_result.raw) if hasattr(rev2_result, "raw") else str(rev2_result)
                 _emit_result_card(rev2_result, "reviewer")
                 _validate_and_clean(rev2_result, rev2_raw, "reviewer")
@@ -1348,7 +1804,8 @@ def full_flow_endpoint():
                         "text": f"\n⚠️ {remaining} problema(s) por resolver após correcção — revê manualmente.\n",
                     })
 
-            _emit_full_flow_summary(arch_result, dev_result, rev_result, fix_result, rev2_result)
+            _emit_full_flow_summary(arch_result, dev_result, rev_result, fix_result, rev2_result,
+                                    backend_files=backend_files_applied)
             _last_agent_output = final_dev_raw
             _last_agent_name = "full-flow"
             entry["output"] = final_dev_raw
@@ -1361,10 +1818,26 @@ def full_flow_endpoint():
         except Exception as e:
             import traceback
             logger.exception("full_flow error (req=%s)", req_num)
-            if "No models loaded" in str(e):
+            err_str = str(e)
+            if "No models loaded" in err_str:
                 capture.sse_queue.put({"type": "lm_error", "text":
                     "Nenhum modelo carregado em LM Studio.\n"
                     "Solução: Abre LM Studio → Developer → carrega o modelo e tenta novamente."})
+            elif "Invalid response from LLM call - None or empty" in err_str:
+                capture.sse_queue.put({"type": "lm_error", "text":
+                    "O modelo devolveu resposta vazia — o contexto excedeu a janela do modelo.\n"
+                    "Soluções: (1) reduz o número de alterações seleccionadas no plano, "
+                    "(2) aumenta 'Context Length' em LM Studio → My Models."})
+            elif any(m in err_str or m in type(e).__name__ for m in _CONVERTER_MARKERS):
+                capture.sse_queue.put({"type": "lm_error", "text":
+                    "O agente atingiu o limite de iterações sem produzir JSON válido.\n"
+                    "Soluções: (1) reduz o número de issues aprovados no plano, "
+                    "(2) verifica os ficheiros manualmente."})
+            elif "Connection error" in err_str or "ConnectError" in err_str or "10051" in err_str or "10061" in err_str:
+                capture.sse_queue.put({"type": "lm_error", "text":
+                    "LM Studio ficou inacessível durante a execução.\n"
+                    "Causas habituais: modelo descarregado por inactividade, LM Studio fechado, ou porta em conflito.\n"
+                    "Solução: verifica que LM Studio está a correr e o modelo carregado, depois tenta novamente."})
             else:
                 capture.sse_queue.put({"type": "output", "text": f"\nErro: {e}\n{traceback.format_exc()}\n"})
             entry["status"] = "error"
@@ -1372,6 +1845,8 @@ def full_flow_endpoint():
             capture._cancel_requested.clear()
             _active_crew_thread = None
             _pending_plan_data = None
+            with _plan_approval_lock:
+                _plan_approval_decision = None
             entry["elapsed"] = round(time.time() - start)
             with _session_lock:
                 session["running"] = False
@@ -1392,26 +1867,33 @@ def full_flow_endpoint():
 
 @app.route("/api/plan/approve", methods=["POST"])
 def plan_approve():
-    data = request.json or {}
-    approved_indices = data.get("approved_indices")  # None = approve all
-    try:
-        _plan_approval_queue.put_nowait({"approved": True, "indices": approved_indices})
-        _plan_approval_event.set()
-        return jsonify({"ok": True})
-    except queue.Full:
+    global _plan_approval_decision
+    if _pending_plan_data is None:
         return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
+    data = request.json or {}
+    approved_indices       = data.get("approved_indices")        # None = approve all changes
+    approved_issue_indices = data.get("approved_issue_indices")  # None = pass all issues
+    with _plan_approval_lock:
+        _plan_approval_decision = {
+            "approved":             True,
+            "indices":              approved_indices,
+            "issue_indices":        approved_issue_indices,
+        }
+    _plan_approval_event.set()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/plan/reject", methods=["POST"])
 def plan_reject():
+    global _plan_approval_decision
+    if _pending_plan_data is None:
+        return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
     data = request.json or {}
     feedback = (data.get("feedback") or "").strip()
-    try:
-        _plan_approval_queue.put_nowait({"approved": False, "feedback": feedback})
-        _plan_approval_event.set()
-        return jsonify({"ok": True})
-    except queue.Full:
-        return jsonify({"error": "Nenhum plano pendente de aprovação"}), 400
+    with _plan_approval_lock:
+        _plan_approval_decision = {"approved": False, "feedback": feedback}
+    _plan_approval_event.set()
+    return jsonify({"ok": True})
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

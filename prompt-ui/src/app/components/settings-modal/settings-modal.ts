@@ -12,12 +12,13 @@ import { ApiService } from '../../services/api';
 export class SettingsModal implements OnInit {
   close = output<void>();
 
-  lmBaseUrl  = signal('');
-  lmApiKey   = signal('');
-  modelName  = signal('');
-  saving     = signal(false);
-  saved      = signal(false);
-  error      = signal('');
+  lmBaseUrl    = signal('');
+  lmApiKey     = signal('');
+  modelName    = signal('');
+  tavilyApiKey = signal('');
+  saving       = signal(false);
+  saved        = signal(false);
+  error        = signal('');
 
   constructor(private api: ApiService) {}
 
@@ -27,6 +28,7 @@ export class SettingsModal implements OnInit {
       this.lmBaseUrl.set(s.lm_base_url ?? '');
       this.lmApiKey.set(s.lm_api_key ?? '');
       this.modelName.set(s.model_name ?? '');
+      this.tavilyApiKey.set(s.tavily_api_key ?? '');
     } catch { /* keep defaults */ }
   }
 
@@ -35,9 +37,10 @@ export class SettingsModal implements OnInit {
     this.error.set('');
     try {
       await this.api.saveSettings({
-        lm_base_url: this.lmBaseUrl(),
-        lm_api_key:  this.lmApiKey(),
-        model_name:  this.modelName(),
+        lm_base_url:    this.lmBaseUrl(),
+        lm_api_key:     this.lmApiKey(),
+        model_name:     this.modelName(),
+        tavily_api_key: this.tavilyApiKey(),
       });
       this.saved.set(true);
       setTimeout(() => { this.saved.set(false); this.close.emit(); }, 800);

@@ -67,7 +67,7 @@ def _offer_fix_cycle(result, inputs: dict):
         return
     fix_inputs = {**inputs, "review_feedback": raw}
     console.print("\n[cyan]🔄  A iniciar ciclo de correção...[/cyan]\n")
-    DevStudioCrew(project_path=inputs.get("project_path", "")).fix_crew().kickoff(inputs=fix_inputs)
+    DevStudioCrew(project_path=inputs.get("project_path", "")).fix_crew().kickoff(inputs=fix_inputs)  # type: ignore[attr-defined]
 
 
 # ── Session summary ──────────────────────────────────────────────────────────

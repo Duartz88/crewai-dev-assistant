@@ -14,8 +14,31 @@ def _python_defs(content: str) -> set[str]:
 
 
 def _normalize_lines(text: str) -> str:
-    """Strip trailing whitespace per line, normalise line endings."""
+    """Strip trailing whitespace per line, normalise CRLF/CR to LF."""
     return "\n".join(line.rstrip() for line in text.splitlines())
+
+
+def _find_stripped_match(content: str, snippet: str) -> str | None:
+    """Find snippet by comparing stripped lines (ignores leading/trailing whitespace).
+
+    Returns the actual file text that matched (with original indentation),
+    or None if not found or ambiguous. Only returns a result when exactly
+    one match is found so callers can safely replace it.
+    """
+    c_lines = content.splitlines(keepends=True)
+    s_lines = snippet.splitlines()
+    n = len(s_lines)
+    if n == 0:
+        return None
+    c_sigs = [l.strip() for l in c_lines]
+    s_sigs = [l.strip() for l in s_lines]
+    matches: list[tuple[int, int]] = []
+    for i in range(len(c_lines) - n + 1):
+        if c_sigs[i:i + n] == s_sigs:
+            matches.append((i, i + n))
+    if len(matches) == 1:
+        return "".join(c_lines[matches[0][0]:matches[0][1]])
+    return None
 
 
 class PatchFileInput(BaseModel):
@@ -85,22 +108,33 @@ class PatchFileTool(BaseTool):
                 occurrences = norm_original.count(norm_snippet)
                 original = norm_original  # diff against normalised
             else:
-                # Give helpful context about what's close
-                snippet_first_line = old_snippet.strip().splitlines()[0].strip()
-                hints = [
-                    ln for ln in original.splitlines()
-                    if snippet_first_line[:30] in ln
-                ]
-                hint_str = (
-                    ("\nLinhas semelhantes encontradas:\n  " + "\n  ".join(hints[:5]))
-                    if hints else "\nNenhuma linha semelhante encontrada."
-                )
-                return (
-                    f"ERRO: old_snippet não foi encontrado em '{os.path.basename(filename)}'.\n"
-                    "Isto significa que o texto que forneceste NÃO é exactamente igual ao ficheiro.\n"
-                    "Solução: usa read_file para ler o ficheiro novamente e copia o trecho "
-                    f"LITERALMENTE, incluindo espaços e indentação.{hint_str}"
-                )
+                # Try stripped-line matching (ignores ALL leading/trailing whitespace per line)
+                actual_old = _find_stripped_match(original, old_snippet)
+                if actual_old is not None:
+                    if original.count(actual_old) > 1:
+                        return (
+                            f"ERRO: correspondência aproximada ambígua em "
+                            f"'{os.path.basename(filename)}' (bloco aparece mais de uma vez)."
+                        )
+                    patched = original.replace(actual_old, new_snippet, 1)
+                    occurrences = 1
+                else:
+                    # All 3 strategies failed — give helpful context
+                    snippet_first_line = old_snippet.strip().splitlines()[0].strip()
+                    hints = [
+                        ln for ln in original.splitlines()
+                        if snippet_first_line[:30] in ln
+                    ]
+                    hint_str = (
+                        ("\nLinhas semelhantes encontradas:\n  " + "\n  ".join(hints[:5]))
+                        if hints else "\nNenhuma linha semelhante encontrada."
+                    )
+                    return (
+                        f"ERRO: old_snippet não foi encontrado em '{os.path.basename(filename)}'.\n"
+                        "Isto significa que o texto que forneceste NÃO é exactamente igual ao ficheiro.\n"
+                        "Solução: usa read_file para ler o ficheiro novamente e copia o trecho "
+                        f"LITERALMENTE, incluindo espaços e indentação.{hint_str}"
+                    )
 
         if occurrences > 1:
             return (

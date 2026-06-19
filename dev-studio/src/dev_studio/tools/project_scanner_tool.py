@@ -8,6 +8,7 @@ unavoidable: it's part of the prompt, not something the LLM can decide to skip.
 ProjectScannerTool wraps the same function so agents can trigger a re-scan
 when needed (e.g. after implementation to verify what changed).
 """
+import fnmatch
 import os
 import re
 from datetime import datetime
@@ -38,10 +39,11 @@ _SKIP_FILES = frozenset({
     'Pipfile.lock', 'Cargo.lock', 'composer.lock', 'Gemfile.lock',
 })
 
-_MAX_FILES_PER_DIR = 30
-_MAX_TOTAL_FILES   = 200
-_MAX_ROUTES        = 120
-_MAX_CLASSES       = 150
+_MAX_FILES_PER_DIR   = 30
+_MAX_TOTAL_FILES     = 200
+_MAX_ROUTES          = 120
+_MAX_CLASSES         = 150
+_LARGE_FILE_LINES    = 500   # files above this get a ⚠️ annotation in the PROJECT MAP
 
 # Class / type extraction per extension
 _CLASS_RE: dict[str, re.Pattern] = {
@@ -59,6 +61,30 @@ _SKIP_CLASS_NAMES = frozenset({
 })
 
 
+def _load_crewignore(project_path: str) -> list[str]:
+    """Load glob patterns from .crewignore in the project root."""
+    path = os.path.join(project_path, '.crewignore')
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding='utf-8', errors='ignore') as fh:
+            return [
+                ln.strip() for ln in fh
+                if ln.strip() and not ln.startswith('#')
+            ]
+    except OSError:
+        return []
+
+
+def _is_crewignored(rel_path: str, patterns: list[str]) -> bool:
+    """Return True if rel_path matches any .crewignore pattern."""
+    name = os.path.basename(rel_path)
+    for p in patterns:
+        if fnmatch.fnmatch(name, p) or fnmatch.fnmatch(rel_path, p):
+            return True
+    return False
+
+
 def scan_project_sync(project_path: str) -> str:
     """
     Walk the project tree and produce a compact PROJECT MAP.
@@ -71,6 +97,8 @@ def scan_project_sync(project_path: str) -> str:
     files:   list[tuple[str, int]]          = []  # (rel_path, line_count)
     routes:  list[tuple[str, str, str]]     = []  # (METHOD, /path, rel_path:line)
     classes: list[tuple[str, str, int]]     = []  # (ClassName, rel_path, line_num)
+
+    ignore_patterns = _load_crewignore(project_path)
 
     for root, dirs, fnames in os.walk(project_path):
         dirs[:] = sorted(
@@ -87,6 +115,9 @@ def scan_project_sync(project_path: str) -> str:
 
             abs_path = os.path.join(root, fname)
             rel_path = os.path.relpath(abs_path, project_path).replace('\\', '/')
+
+            if _is_crewignored(rel_path, ignore_patterns):
+                continue
 
             try:
                 with open(abs_path, encoding='utf-8', errors='ignore') as fh:
@@ -138,6 +169,11 @@ def scan_project_sync(project_path: str) -> str:
 
     out += [
         "⚠️  REGRAS DO PROJECT MAP:",
+        "  • Ficheiros marcados com ⚠️ GRANDE (>500 ln): NÃO leres a menos que o pedido mencione",
+        "    esse ficheiro EXPLICITAMENTE pelo nome. Ler ficheiros grandes desnecessários esgota",
+        "    a janela de contexto e causa falhas. Ignora-os completamente se não forem relevantes.",
+        "  • Para excluir ficheiros permanentemente do PROJECT MAP, cria .crewignore na raiz do",
+        "    projecto (um padrão por linha, ex: GlinttSetupPosto.ps1 ou *.bak).",
         "  • Antes de criar uma rota, verifica que NÃO está na lista acima.",
         "  • Antes de criar uma classe/service, verifica que NÃO está na lista acima.",
         "  • Se uma rota ou classe não consta aqui, provavelmente não existe.",
@@ -232,7 +268,8 @@ def _format_tree(files: list[tuple[str, int]], out: list[str]) -> None:
             out.append(f"  {label}")
         for rel_path, lc in flist[:_MAX_FILES_PER_DIR]:
             prefix = '    ' if label else '  '
-            out.append(f"{prefix}{rel_path}  ({lc} ln)")
+            size_tag = f"  ⚠️ GRANDE ({lc} ln)" if lc > _LARGE_FILE_LINES else f"  ({lc} ln)"
+            out.append(f"{prefix}{rel_path}{size_tag}")
         if len(flist) > _MAX_FILES_PER_DIR:
             out.append(f"    … e mais {len(flist) - _MAX_FILES_PER_DIR} ficheiros")
 

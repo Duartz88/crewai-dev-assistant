@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { SseService } from '../../services/sse';
 import { ApiService } from '../../services/api';
 import { Session, SessionRequest, SseMessage, ArchitecturePlanData } from '../../models';
+import { PlanApproval } from '../plan-review-modal/plan-review-modal';
 import { SetupModal } from '../setup-modal/setup-modal';
 import { PromptModal } from '../prompt-modal/prompt-modal';
 import { CommitModal } from '../commit-modal/commit-modal';
@@ -92,7 +93,8 @@ export class Shell implements OnInit, OnDestroy {
   };
 
   private _esc(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   private _renderCode(text: string, lang: string): string {
@@ -208,10 +210,7 @@ export class Shell implements OnInit, OnDestroy {
         break;
       case 'request_start': {
         this._flushPendingTool();
-        this.running.set(true);
-        this.elapsedSec.set(0);
-        if (this._runTimer) clearInterval(this._runTimer);
-        this._runTimer = setInterval(() => this.elapsedSec.update(s => s + 1), 1000);
+        this._beginRunning();  // idempotent — resets timer to 0 if already running
         this._reqStartLine = this.lines().length;
         this._md = { state: 'normal', lang: '', lines: [], antesCode: null, nextIs: null };
         this.addLine(`\n${'─'.repeat(60)}\n${msg.agent_label} — Pedido #${msg.num}: ${msg.request}`, 'head');
@@ -468,6 +467,13 @@ export class Shell implements OnInit, OnDestroy {
     }
   }
 
+  private _beginRunning() {
+    this.running.set(true);
+    this.elapsedSec.set(0);
+    if (this._runTimer) clearInterval(this._runTimer);
+    this._runTimer = setInterval(() => this.elapsedSec.update(s => s + 1), 1000);
+  }
+
   async onSubmitRequest(request: string) {
     const lm = await this.api.getLmStatus().catch(() => ({ ok: false, error: 'Sem resposta do backend', model: null }));
     this.lmOk.set(lm.ok);
@@ -478,16 +484,19 @@ export class Shell implements OnInit, OnDestroy {
     }
     if (this.selectedAgent() === 'full-flow') {
       const data = await this.api.fullFlow(request);
-      if (data.error) this.addLine('Erro: ' + data.error, 'err');
+      if (data.error) { this.addLine('Erro: ' + data.error, 'err'); return; }
+      // Start running immediately on HTTP accept — don't wait for SSE request_start
+      this._beginRunning();
       return;
     }
     const data = await this.api.runAgent(this.selectedAgent(), request);
-    if (data.error) this.addLine('Erro: ' + data.error, 'err');
+    if (data.error) { this.addLine('Erro: ' + data.error, 'err'); return; }
+    this._beginRunning();
   }
 
-  async onApprovePlan(approvedIndices: number[]) {
+  async onApprovePlan(approval: PlanApproval) {
     this.showPlanReview.set(false);
-    await this.api.approvePlan(approvedIndices);
+    await this.api.approvePlan(approval.changeIndices, approval.issueIndices ?? undefined);
   }
 
   async onRejectPlan(feedback: string) {

@@ -3,8 +3,9 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 
-_DEFAULT_PAGE = 400   # lines per read — keeps prefill fast on local 32B models
-_MAX_PAGE     = 600   # hard ceiling per call
+_DEFAULT_PAGE      = 400   # lines per read — keeps prefill fast on local 32B models
+_MAX_PAGE          = 600   # hard ceiling per call
+_LARGE_FILE_WARN   = 500   # files above this trigger an upfront warning when read without pagination
 
 
 class FileReadInput(BaseModel):
@@ -58,7 +59,14 @@ class ProjectFileReadTool(BaseTool):
                 if complete
                 else f"⚠️ TRUNCADO: linhas {start+1}–{end} de {total} — chama read_file com start_line={end+1}"
             )
-            header = f"[{os.path.basename(resolved)} | {status}]\n"
+            large_warn = ""
+            if total > _LARGE_FILE_WARN and start_line == 1:
+                large_warn = (
+                    f"\n🚨 AVISO FICHEIRO GRANDE ({total} ln): Este ficheiro tem mais de {_LARGE_FILE_WARN} linhas. "
+                    f"Se este ficheiro não for mencionado explicitamente no pedido do utilizador, "
+                    f"PARA imediatamente e não continues a ler. Usa grep_in_files para secções específicas.\n"
+                )
+            header = f"[{os.path.basename(resolved)} | {status}]{large_warn}\n"
             content = header + "\n".join(chunk)
 
             if not complete:

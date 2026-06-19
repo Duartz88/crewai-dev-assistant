@@ -7,14 +7,15 @@ import json
 import os
 
 _SETTINGS_FILE = os.path.expanduser("~/.dev_studio_settings.json")
-_KEYS = ("lm_base_url", "lm_api_key", "model_name")
+_KEYS = ("lm_base_url", "lm_api_key", "model_name", "tavily_api_key")
 
 
 def _env_defaults() -> dict:
     return {
-        "lm_base_url": os.environ.get("LM_BASE_URL", "http://localhost:1234/v1"),
-        "lm_api_key":  os.environ.get("LM_API_KEY",  "lm-studio"),
-        "model_name":  os.environ.get("LM_MODEL",    ""),
+        "lm_base_url":    os.environ.get("LM_BASE_URL",    "http://localhost:1234/v1"),
+        "lm_api_key":     os.environ.get("LM_API_KEY",     "lm-studio"),
+        "model_name":     os.environ.get("LM_MODEL",       ""),
+        "tavily_api_key": os.environ.get("TAVILY_API_KEY", ""),
     }
 
 
